@@ -30,7 +30,6 @@ extern "C" {
     fn CGEventSetIntegerValueField(e: Ref, field: u32, v: i64);
     fn CGEventSetDoubleValueField(e: Ref, field: u32, v: f64);
     fn CGEventPost(tap: u32, e: Ref);
-    fn CGWarpMouseCursorPosition(at: CGPoint) -> i32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -212,9 +211,12 @@ impl Output {
             Action::RestoreCursor => {
                 if let Some(p) = self.saved.take() {
                     if s.return_cursor {
-                        // Let the app take the click before the cursor leaves.
-                        std::thread::sleep(std::time::Duration::from_millis(15));
-                        CGWarpMouseCursorPosition(cg(p));
+                        // A queued move, not a warp: it lands after the click
+                        // and scroll events already sent, so they reach the
+                        // Edge before the cursor leaves. (A warp jumps the
+                        // queue and the click went to the main screen.)
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        self.mouse(MOVED, p, 0, 0);
                     }
                 }
             }

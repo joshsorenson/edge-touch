@@ -8,6 +8,8 @@
 //! - `claim.rs`: tells Edge Deck to let go of the panel while we use it.
 //! - `settings.rs`: the menu's toggles, saved as JSON.
 
+#[cfg(target_os = "macos")]
+mod ax;
 mod claim;
 mod gesture;
 #[cfg(target_os = "macos")]
@@ -110,7 +112,7 @@ mod app {
         let items = Items {
             status: MenuItem::new("Edge Touch: starting…", false, None),
             enabled: CheckMenuItem::new("Use the Edge as a touchscreen", true, s.enabled, None),
-            drag_scrolls: CheckMenuItem::new("One finger scrolls (off: drags)", true, s.drag_scrolls, None),
+            drag_scrolls: CheckMenuItem::new("One finger scrolls in pages and lists", true, s.drag_scrolls, None),
             momentum: CheckMenuItem::new("Glide after a flick", true, s.momentum, None),
             flip: CheckMenuItem::new("Flip scroll direction", true, s.flip_scroll, None),
             return_cursor: CheckMenuItem::new("Return cursor to main screen", true, s.return_cursor, None),

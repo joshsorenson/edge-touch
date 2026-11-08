@@ -79,9 +79,9 @@ impl Default for Options {
 }
 
 /// How far a finger moves (points) before a touch counts as a drag, not a tap.
-const SLOP: f64 = 10.0;
+const SLOP: f64 = 14.0;
 /// How long (seconds) a still finger is held before it becomes a hold.
-const HOLD: f64 = 0.5;
+const HOLD: f64 = 0.4;
 /// Two fingers down and up within this time, without moving, is a right-click.
 const TWO_TAP: f64 = 0.35;
 /// Change in finger spread (points) that starts a pinch.

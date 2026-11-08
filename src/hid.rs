@@ -91,6 +91,8 @@ fn normalize(v: i64, min: i64, max: i64) -> f64 {
 /// One finger slot in the digitizer report (the Edge has 10).
 #[derive(Default, Clone, Copy, Debug)]
 struct Slot {
+    /// From the mouse-emulation interface, not the digitizer.
+    mouse: bool,
     tip: bool,
     id: u32,
     x: f64,
@@ -102,13 +104,19 @@ struct Slot {
 struct Slots {
     slots: HashMap<usize, Slot>,
     dirty: bool,
+    /// The digitizer has sent fingers. Until then (it may stay in mouse mode),
+    /// fall back to the single touch from the mouse-emulation interface.
+    digitizer_seen: bool,
+    /// Values logged so far (the first few go to the log for debugging).
+    logged: u32,
 }
 
 impl Slots {
     /// Every finger that's down, 0..1 across the panel, keyed by contact id.
     fn fingers(&self) -> Vec<(u32, f64, f64)> {
         let mut by_id: HashMap<u32, (f64, f64)> = HashMap::new();
-        for s in self.slots.values().filter(|s| s.tip) {
+        let want_mouse = !self.digitizer_seen;
+        for s in self.slots.values().filter(|s| s.tip && s.mouse == want_mouse) {
             by_id.insert(s.id, (s.x, s.y));
         }
         by_id.into_iter().map(|(id, (x, y))| (id, x, y)).collect()
@@ -139,6 +147,8 @@ extern "C" {
     fn IOHIDElementGetParent(element: Ref) -> Ref;
     fn IOHIDElementGetCookie(element: Ref) -> u32;
     fn IOHIDRequestAccess(request_type: u32) -> bool;
+    fn IOHIDDeviceGetReport(device: Ref, report_type: u32, report_id: isize, report: *mut u8, len: *mut isize) -> i32;
+    fn IOHIDDeviceSetReport(device: Ref, report_type: u32, report_id: isize, report: *const u8, len: isize) -> i32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -153,6 +163,11 @@ const REQUEST_LISTEN_EVENT: u32 = 1;
 const NOT_PERMITTED: i32 = 0xe00002e2u32 as i32;
 /// kIOReturnExclusiveAccess: another app (Edge Deck) has seized it.
 const EXCLUSIVE: i32 = 0xe00002c5u32 as i32;
+
+/// Feature report 0x21 holds the digitizer's Device Mode (see the Edge's
+/// report descriptor: Device Configuration collection).
+const DEVICE_MODE_REPORT: isize = 0x21;
+const REPORT_FEATURE: u32 = 2;
 
 const PAGE_GENERIC_DESKTOP: u32 = 0x01;
 const USAGE_X: u32 = 0x30;
@@ -221,9 +236,21 @@ extern "C" fn on_value(ctx: *mut c_void, _result: i32, _sender: Ref, value: Ref)
         let el = IOHIDValueGetElement(value);
         let (page, usage) = (IOHIDElementGetUsagePage(el), IOHIDElementGetUsage(el));
         let v = IOHIDValueGetIntegerValue(value) as i64;
-        // The parent collection is the finger slot.
-        let key = IOHIDElementGetCookie(IOHIDElementGetParent(el)) as usize;
+        // The parent collection is the finger slot. Its usage tells the
+        // digitizer's fingers (Digitizer page) from the mouse pointer.
+        let parent = IOHIDElementGetParent(el);
+        let mouse = !parent.is_null() && IOHIDElementGetUsagePage(parent) != PAGE_DIGITIZER;
+        if slots.logged < 12 && !mouse {
+            slots.logged += 1;
+            log(&format!("finger value page={page:#x} usage={usage:#x} v={v}"));
+        }
+        let key = if parent.is_null() { 0 } else { IOHIDElementGetCookie(parent) as usize };
         let slot = slots.slots.entry(key).or_default();
+        slot.mouse = mouse;
+        if !mouse && page == PAGE_DIGITIZER && !slots.digitizer_seen {
+            slots.digitizer_seen = true;
+            log("multi-finger reports arriving");
+        }
         match (page, usage) {
             (PAGE_GENERIC_DESKTOP, USAGE_X) => slot.x = normalize(v, IOHIDElementGetLogicalMin(el) as i64, IOHIDElementGetLogicalMax(el) as i64),
             (PAGE_GENERIC_DESKTOP, USAGE_Y) => slot.y = normalize(v, IOHIDElementGetLogicalMin(el) as i64, IOHIDElementGetLogicalMax(el) as i64),
@@ -233,6 +260,20 @@ extern "C" fn on_value(ctx: *mut c_void, _result: i32, _sender: Ref, value: Ref)
         }
         slots.dirty = true;
     }
+}
+
+static TRACED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Log what the first gestures did (finger count plus every action but moves),
+/// to debug touches that don't do what they should.
+fn trace(f: &Frame, acts: &[crate::gesture::Action]) {
+    use crate::gesture::Action;
+    use std::sync::atomic::Ordering;
+    let shown: Vec<_> = acts.iter().filter(|a| !matches!(a, Action::Drag(_) | Action::Momentum { .. } | Action::Scroll { phase: crate::gesture::Phase::Changed, .. })).collect();
+    if shown.is_empty() || TRACED.fetch_add(1, Ordering::Relaxed) > 150 {
+        return;
+    }
+    log(&format!("t={:.3} fingers={} -> {:?}", f.t, f.touches.len(), shown));
 }
 
 /// Run the touch driver on its own thread, forever.
@@ -277,9 +318,7 @@ unsafe fn run() {
         // reports the same touch again, which would look like a second finger.
         let has_digitizer = devices.iter().any(|&d| prop_i64(d, "PrimaryUsagePage") == PAGE_DIGITIZER as i64);
         for &dev in &devices {
-            if !has_digitizer || prop_i64(dev, "PrimaryUsagePage") == PAGE_DIGITIZER as i64 {
-                IOHIDDeviceRegisterInputValueCallback(dev, on_value, slots as *mut c_void);
-            }
+            IOHIDDeviceRegisterInputValueCallback(dev, on_value, slots as *mut c_void);
             IOHIDDeviceScheduleWithRunLoop(dev, run_loop, mode);
         }
 
@@ -314,23 +353,52 @@ unsafe fn run() {
         }
 
         if seized.iter().all(|s| *s) {
+            // Ask the digitizer for multi-finger reports (HID "Device Mode" =
+            // 2). Many touch panels stay in mouse mode until the computer
+            // asks, which gives one finger through the mouse interface only.
+            if has_digitizer {
+                for &dev in devices.iter().filter(|&&d| prop_i64(d, "PrimaryUsagePage") == PAGE_DIGITIZER as i64) {
+                    let report = [DEVICE_MODE_REPORT as u8, 2u8, 0u8];
+                    let rc = IOHIDDeviceSetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, report.as_ptr(), report.len() as isize);
+                    let mut back = [0u8; 8];
+                    let mut len: isize = back.len() as isize;
+                    back[0] = DEVICE_MODE_REPORT as u8;
+                    let get = IOHIDDeviceGetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, back.as_mut_ptr(), &mut len);
+                    log(&format!("device mode -> multi-touch: set {rc:#x}, read back {get:#x} {:?}", &back[..len.max(0) as usize]));
+                }
+            }
             set_status(Status::On);
             let mut edge = edge_rect();
             let mut ticks = 0u32;
+            let mut fingers_before = 0usize;
+            let mut here_scrolls = true;
             loop {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.008, 0);
                 let s = settings::get();
-                gestures.opts.drag_scrolls = s.drag_scrolls;
+                gestures.opts.drag_scrolls = s.drag_scrolls && here_scrolls;
                 gestures.opts.momentum = s.momentum;
                 let t = clock.elapsed().as_secs_f64();
                 if (*slots).dirty {
                     (*slots).dirty = false;
                     if let Some((ex, ey, ew, eh)) = edge {
                         let touches = (*slots).fingers().into_iter().map(|(id, x, y)| (id, Pt::new(ex + x * ew, ey + y * eh))).collect();
-                        out.run(&gestures.frame(&Frame { t, touches }), &s);
+                        let frame: Frame = Frame { t, touches };
+                        // First finger down: ask what's under it, so a drag
+                        // scrolls pages and lists but moves everything else.
+                        if fingers_before == 0 && frame.touches.len() == 1 && s.drag_scrolls {
+                            let p = frame.touches[0].1;
+                            here_scrolls = crate::ax::scrolls_at(p.x, p.y);
+                            gestures.opts.drag_scrolls = here_scrolls;
+                        }
+                        fingers_before = frame.touches.len();
+                        let acts = gestures.frame(&frame);
+                        trace(&frame, &acts);
+                        out.run(&acts, &s);
                     }
                 }
-                out.run(&gestures.tick(t), &s);
+                let acts = gestures.tick(t);
+                trace(&Frame { t, touches: vec![] }, &acts);
+                out.run(&acts, &s);
 
                 ticks += 1;
                 if !s.enabled {
