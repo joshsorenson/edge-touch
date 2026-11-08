@@ -4,6 +4,10 @@ A menu bar app that makes the Corsair XENEON Edge a real touchscreen on macOS. T
 
 macOS 27 treats the Edge's touch panel like a trackpad. Edge Touch takes the panel over and turns your fingers into clicks, scrolls and zoom at the spot you touched.
 
+## Install
+
+Download the latest `Edge-Touch-<version>.zip` from Releases, unzip, and drag **Edge Touch** to Applications. Open it and allow **Accessibility** and **Input Monitoring** when macOS asks. Works on Apple silicon and Intel, macOS 13 or later. Signed and notarized.
+
 ## Gestures
 
 | Gesture | Does |
@@ -50,6 +54,8 @@ Only one app can hold the touch panel. While Edge Touch is on, it refreshes `~/L
 cargo test
 scripts/bundle.sh
 ```
+
+`scripts/release.sh` builds the download: universal, Developer ID signed, notarized, zipped and published as a GitHub release (setup steps are at the top of the script). `scripts/make_icon.py` redraws the app icon.
 
 `bundle.sh` builds `dist/Edge Touch.app`, signs it with your Apple Development identity (so permissions survive rebuilds), installs it in /Applications and opens it.
 

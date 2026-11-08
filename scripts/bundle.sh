@@ -1,13 +1,17 @@
 #!/bin/sh
 # Build Edge Touch.app and install it in /Applications.
 #
-#   scripts/bundle.sh            build, sign, install, relaunch
-#   scripts/bundle.sh --no-install
+#   scripts/bundle.sh                build, sign, install, relaunch
+#   scripts/bundle.sh --no-install   just build dist/Edge Touch.app
 #
-# Signing keeps macOS permissions (Input Monitoring, Accessibility) across
-# rebuilds. Set EDGE_TOUCH_SIGN to your "Apple Development: ..." identity
-# (see `security find-identity -v -p codesigning`), or "-" for ad-hoc, which
-# makes macOS ask for permissions again after every build.
+# Settings (environment):
+#   EDGE_TOUCH_SIGN       signing identity. Default: your "Apple Development"
+#                         identity, so macOS permissions survive rebuilds.
+#                         "-" signs ad-hoc (macOS then re-asks for permissions
+#                         after every build).
+#   EDGE_TOUCH_UNIVERSAL  1 builds for Apple silicon and Intel in one app.
+#
+# For a build other people can download, use scripts/release.sh.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -16,11 +20,22 @@ SIGN="${SIGN:--}"
 APP="dist/Edge Touch.app"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
-taskpolicy -c utility cargo build --release
+if [ "${EDGE_TOUCH_UNIVERSAL:-0}" = "1" ]; then
+  taskpolicy -c utility cargo build --release --target aarch64-apple-darwin
+  taskpolicy -c utility cargo build --release --target x86_64-apple-darwin
+  mkdir -p target/universal
+  lipo -create -output target/universal/edge-touch \
+    target/aarch64-apple-darwin/release/edge-touch target/x86_64-apple-darwin/release/edge-touch
+  BIN=target/universal/edge-touch
+else
+  taskpolicy -c utility cargo build --release
+  BIN=target/release/edge-touch
+fi
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp target/release/edge-touch "$APP/Contents/MacOS/edge-touch"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN" "$APP/Contents/MacOS/edge-touch"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -30,21 +45,25 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleName</key><string>Edge Touch</string>
   <key>CFBundleDisplayName</key><string>Edge Touch</string>
   <key>CFBundleExecutable</key><string>edge-touch</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSHumanReadableCopyright</key><string>Made by Josh Sorenson. joshsorenson.com</string>
 </dict>
 </plist>
 EOF
-codesign --force --options runtime --sign "$SIGN" "$APP"
+# Hardened runtime + secure timestamp: both required for notarization.
+TS="--timestamp"
+[ "$SIGN" = "-" ] && TS=""
+codesign --force --options runtime $TS --sign "$SIGN" "$APP"
 echo "Built $APP (signed with: $SIGN)"
 
 [ "${1:-}" = "--no-install" ] && exit 0
 pkill -x edge-touch 2>/dev/null && sleep 1 || true
-rm -rf "/Applications/Edge Touch.app"
 ditto "$APP" "/Applications/Edge Touch.app"
 open "/Applications/Edge Touch.app"
 echo "Installed and opened /Applications/Edge Touch.app"
