@@ -276,6 +276,68 @@ fn trace(f: &Frame, acts: &[crate::gesture::Action]) {
     log(&format!("t={:.3} fingers={} -> {:?}", f.t, f.touches.len(), shown));
 }
 
+/// Diagnostic: per-interface counts of (page, usage) values seen while
+/// listening without exclusive access.
+static SEEN: Mutex<Option<HashMap<(i64, u32, u32), u32>>> = Mutex::new(None);
+
+extern "C" fn on_listen(ctx: *mut c_void, _result: i32, _sender: Ref, value: Ref) {
+    unsafe {
+        let el = IOHIDValueGetElement(value);
+        let key = (ctx as i64, IOHIDElementGetUsagePage(el), IOHIDElementGetUsage(el));
+        *SEEN.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default() += 1;
+    }
+}
+
+/// If the "listen" flag file exists: watch every interface for 45 seconds
+/// WITHOUT taking it over (macOS keeps it too), logging which values arrive.
+/// Halfway through, ask the digitizer for multi-finger mode again. Shows
+/// whether the panel sends multi-finger data when we don't seize it.
+unsafe fn listen_diagnostic(run_loop: Ref) {
+    let flag = settings::dir().join("listen");
+    if !flag.exists() {
+        return;
+    }
+    let _ = std::fs::remove_file(&flag);
+    log("listen: start (touch with two fingers now)");
+    set_status(Status::Failed("diagnostic: listening".into()));
+    let devices = touch_devices();
+    for &dev in &devices {
+        let page = prop_i64(dev, "PrimaryUsagePage");
+        IOHIDDeviceRegisterInputValueCallback(dev, on_listen, page as usize as *mut c_void);
+        IOHIDDeviceScheduleWithRunLoop(dev, run_loop, kCFRunLoopDefaultMode as Ref);
+        let rc = IOHIDDeviceOpen(dev, 0);
+        log(&format!("listen: open {page:#x} (shared) -> {rc:#x}"));
+    }
+    let started = Instant::now();
+    let mut asked = false;
+    let mut next_report = 5u64;
+    while started.elapsed() < Duration::from_secs(45) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 0);
+        if !asked && started.elapsed() > Duration::from_secs(22) {
+            asked = true;
+            for &dev in devices.iter().filter(|&&d| prop_i64(d, "PrimaryUsagePage") == PAGE_DIGITIZER as i64) {
+                let report = [DEVICE_MODE_REPORT as u8, 2u8, 0u8];
+                let rc = IOHIDDeviceSetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, report.as_ptr(), report.len() as isize);
+                log(&format!("listen: asked for multi-finger mode -> {rc:#x}"));
+            }
+        }
+        if started.elapsed().as_secs() >= next_report {
+            next_report += 5;
+            let seen = SEEN.lock().unwrap().take().unwrap_or_default();
+            let mut rows: Vec<_> = seen.into_iter().collect();
+            rows.sort();
+            let txt: Vec<String> = rows.iter().map(|((iface, p, u), n)| format!("{iface:#x}:{p:#x}/{u:#x}={n}")).collect();
+            log(&format!("listen: {}s {}", started.elapsed().as_secs(), if txt.is_empty() { "nothing".into() } else { txt.join(" ") }));
+        }
+    }
+    for &dev in &devices {
+        IOHIDDeviceClose(dev, 0);
+        IOHIDDeviceUnscheduleFromRunLoop(dev, run_loop, kCFRunLoopDefaultMode as Ref);
+    }
+    release_all(&devices);
+    log("listen: done");
+}
+
 /// Run the touch driver on its own thread, forever.
 pub fn start() {
     std::thread::spawn(|| unsafe { run() });
@@ -291,6 +353,7 @@ unsafe fn run() {
     let mut gestures = Recognizer::default();
     let clock = Instant::now();
     let mut asked_ax = false;
+    listen_diagnostic(run_loop);
 
     loop {
         let s = settings::get();
@@ -358,8 +421,20 @@ unsafe fn run() {
             // asks, which gives one finger through the mouse interface only.
             if has_digitizer {
                 for &dev in devices.iter().filter(|&&d| prop_i64(d, "PrimaryUsagePage") == PAGE_DIGITIZER as i64) {
+                    // Windows reads "Contact Count Maximum" (feature 0x0A)
+                    // before switching modes, and some panels wait for that.
+                    let mut max = [0u8; 4];
+                    max[0] = 0x0A;
+                    let mut mlen: isize = max.len() as isize;
+                    let mrc = IOHIDDeviceGetReport(dev, REPORT_FEATURE, 0x0A, max.as_mut_ptr(), &mut mlen);
+                    log(&format!("contact count max: {mrc:#x} {:?}", &max[..mlen.max(0) as usize]));
                     let report = [DEVICE_MODE_REPORT as u8, 2u8, 0u8];
                     let rc = IOHIDDeviceSetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, report.as_ptr(), report.len() as isize);
+                    // Same request without the report id byte, in case the
+                    // controller wants it that way.
+                    let bare = [2u8, 0u8];
+                    let rc2 = IOHIDDeviceSetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, bare.as_ptr(), bare.len() as isize);
+                    log(&format!("device mode (no id byte): {rc2:#x}"));
                     let mut back = [0u8; 8];
                     let mut len: isize = back.len() as isize;
                     back[0] = DEVICE_MODE_REPORT as u8;
@@ -377,6 +452,9 @@ unsafe fn run() {
                 let s = settings::get();
                 gestures.opts.drag_scrolls = s.drag_scrolls && here_scrolls;
                 gestures.opts.momentum = s.momentum;
+                gestures.opts.zoom_drag = s.zoom_drag;
+                gestures.opts.edge_swipes = s.edge_swipes;
+                gestures.opts.bounds = edge;
                 let t = clock.elapsed().as_secs_f64();
                 if (*slots).dirty {
                     (*slots).dirty = false;

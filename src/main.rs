@@ -34,8 +34,12 @@ mod app {
     use crate::{claim, hid};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
-    use tao::event::{Event, StartCause};
-    use tao::event_loop::{ControlFlow, EventLoopBuilder};
+    use serde_json::{json, Value};
+    use tao::dpi::LogicalSize;
+    use tao::event::{Event, StartCause, WindowEvent};
+    use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+    use tao::window::{Window, WindowBuilder};
+    use wry::{WebView, WebViewBuilder};
     use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
     use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -94,17 +98,12 @@ mod app {
         let _ = std::process::Command::new("open").arg(format!("x-apple.systempreferences:com.apple.preference.security?{pane}")).spawn();
     }
 
+    /// The menu: status, the on/off switch, Settings and About.
     struct Items {
         status: MenuItem,
         enabled: CheckMenuItem,
-        drag_scrolls: CheckMenuItem,
-        momentum: CheckMenuItem,
-        flip: CheckMenuItem,
-        return_cursor: CheckMenuItem,
-        pinch_keys: CheckMenuItem,
-        login: CheckMenuItem,
-        ax: MenuItem,
-        input: MenuItem,
+        settings: MenuItem,
+        about: MenuItem,
         quit: MenuItem,
     }
 
@@ -112,64 +111,143 @@ mod app {
         let items = Items {
             status: MenuItem::new("Edge Touch: starting…", false, None),
             enabled: CheckMenuItem::new("Use the Edge as a touchscreen", true, s.enabled, None),
-            drag_scrolls: CheckMenuItem::new("One finger scrolls in pages and lists", true, s.drag_scrolls, None),
-            momentum: CheckMenuItem::new("Glide after a flick", true, s.momentum, None),
-            flip: CheckMenuItem::new("Flip scroll direction", true, s.flip_scroll, None),
-            return_cursor: CheckMenuItem::new("Return cursor to main screen", true, s.return_cursor, None),
-            pinch_keys: CheckMenuItem::new("Pinch presses Cmd + / Cmd −", true, s.pinch_keys, None),
-            login: CheckMenuItem::new("Open at login", true, agent_path().exists(), None),
-            ax: MenuItem::new("Open Accessibility settings…", true, None),
-            input: MenuItem::new("Open Input Monitoring settings…", true, None),
+            settings: MenuItem::new("Settings…", true, None),
+            about: MenuItem::new("About Edge Touch", true, None),
             quit: MenuItem::new("Quit Edge Touch", true, None),
         };
         let menu = Menu::new();
         let sep = || PredefinedMenuItem::separator();
-        let _ = menu.append_items(&[
-            &items.status,
-            &sep(),
-            &items.enabled,
-            &sep(),
-            &items.drag_scrolls,
-            &items.momentum,
-            &items.flip,
-            &items.return_cursor,
-            &items.pinch_keys,
-            &sep(),
-            &items.login,
-            &items.ax,
-            &items.input,
-            &sep(),
-            &items.quit,
-        ]);
+        let _ = menu.append_items(&[&items.status, &sep(), &items.enabled, &sep(), &items.settings, &items.about, &sep(), &items.quit]);
         (menu, items)
+    }
+
+    /// Messages from the settings page (see src/ui/settings.html).
+    enum UserEvent {
+        Ipc(String),
+    }
+
+    /// The settings window and its web view.
+    struct SettingsWindow {
+        window: Window,
+        view: WebView,
+    }
+
+    /// Everything the settings page shows, as JSON for its `render()`.
+    fn state_json() -> String {
+        let st = hid::status();
+        json!({
+            "settings": settings::get(),
+            "status": st.label(),
+            "on": st == hid::Status::On,
+            "login": agent_path().exists(),
+            "accessibility": crate::output::accessibility_ok(false),
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+        .to_string()
+    }
+
+    fn open_window(target: &EventLoopWindowTarget<UserEvent>, proxy: &EventLoopProxy<UserEvent>) -> Option<SettingsWindow> {
+        let window = WindowBuilder::new()
+            .with_title("Edge Touch")
+            .with_inner_size(LogicalSize::new(560.0, 600.0))
+            .with_min_inner_size(LogicalSize::new(460.0, 420.0))
+            .build(target)
+            .map_err(|e| settings::log(&format!("settings window: {e}")))
+            .ok()?;
+        let proxy = proxy.clone();
+        let view = WebViewBuilder::new()
+            .with_html(include_str!("ui/settings.html"))
+            .with_ipc_handler(move |req| {
+                let _ = proxy.send_event(UserEvent::Ipc(req.body().clone()));
+            })
+            .build(&window)
+            .map_err(|e| settings::log(&format!("settings view: {e}")))
+            .ok()?;
+        window.set_focus();
+        Some(SettingsWindow { window, view })
+    }
+
+    /// Handle one message from the settings page.
+    fn on_ipc(body: &str, win: &SettingsWindow) {
+        let Ok(msg) = serde_json::from_str::<Value>(body) else { return };
+        match msg["type"].as_str() {
+            Some("set") => {
+                let (Some(key), Some(on)) = (msg["key"].as_str(), msg["value"].as_bool()) else { return };
+                if key == "login" {
+                    set_login(on);
+                } else {
+                    settings::update(|s| {
+                        let mut v = serde_json::to_value(*s).unwrap_or_default();
+                        if v.get(key).is_some() {
+                            v[key] = Value::Bool(on);
+                            if let Ok(next) = serde_json::from_value(v) {
+                                *s = next;
+                            }
+                        }
+                    });
+                }
+            }
+            Some("open") => match msg["what"].as_str() {
+                Some("accessibility") => open_settings("Privacy_Accessibility"),
+                Some("input") => open_settings("Privacy_ListenEvent"),
+                Some("website") => drop(std::process::Command::new("open").arg("https://joshsorenson.com").spawn()),
+                Some("log") => drop(std::process::Command::new("open").arg("-R").arg(settings::dir().join("edge-touch.log")).spawn()),
+                _ => {}
+            },
+            _ => {}
+        }
+        let _ = win.view.evaluate_script(&format!("render({})", state_json()));
     }
 
     pub fn run() {
         settings::log("starting");
-        let mut event_loop = EventLoopBuilder::new().build();
+        let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        let proxy = event_loop.create_proxy();
 
         hid::start();
 
         let mut tray: Option<(TrayIcon, Items)> = None;
-        let mut shown: Option<hid::Status> = None;
+        let mut win: Option<SettingsWindow> = None;
+        let mut shown: Option<String> = None;
+        let mut last_push = Instant::now();
         let menu_events = MenuEvent::receiver();
 
-        event_loop.run(move |event, _, flow| {
+        event_loop.run(move |event, target, flow| {
             *flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250));
 
-            if let Event::NewEvents(StartCause::Init) = event {
-                let (menu, items) = build(&settings::get());
-                let icon = TrayIconBuilder::new()
-                    .with_menu(Box::new(menu))
-                    .with_icon(icon(true))
-                    .with_icon_as_template(true)
-                    .with_tooltip("Edge Touch")
-                    .build()
-                    .expect("menu bar icon");
-                tray = Some((icon, items));
+            match &event {
+                Event::NewEvents(StartCause::Init) => {
+                    let (menu, items) = build(&settings::get());
+                    let icon = TrayIconBuilder::new()
+                        .with_menu(Box::new(menu))
+                        .with_icon(icon(true))
+                        .with_icon_as_template(true)
+                        .with_tooltip("Edge Touch")
+                        .build()
+                        .expect("menu bar icon");
+                    tray = Some((icon, items));
+                }
+                Event::UserEvent(UserEvent::Ipc(body)) => {
+                    if let Some(w) = &win {
+                        on_ipc(body, w);
+                    }
+                }
+                Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => win = None,
+                _ => {}
             }
             let Some((icon_handle, items)) = tray.as_ref() else { return };
+
+            // Open the settings window on a tab (or bring it forward).
+            let mut show = |tab: &str| {
+                if win.is_none() {
+                    win = open_window(target, &proxy);
+                }
+                if let Some(w) = &win {
+                    w.window.set_focus();
+                    let _ = w.view.evaluate_script(&format!("show('{tab}'); render({})", state_json()));
+                }
+            };
 
             while let Ok(ev) = menu_events.try_recv() {
                 let id = ev.id();
@@ -180,30 +258,31 @@ mod app {
                     return;
                 } else if id == items.enabled.id() {
                     settings::update(|s| s.enabled = items.enabled.is_checked());
-                } else if id == items.drag_scrolls.id() {
-                    settings::update(|s| s.drag_scrolls = items.drag_scrolls.is_checked());
-                } else if id == items.momentum.id() {
-                    settings::update(|s| s.momentum = items.momentum.is_checked());
-                } else if id == items.flip.id() {
-                    settings::update(|s| s.flip_scroll = items.flip.is_checked());
-                } else if id == items.return_cursor.id() {
-                    settings::update(|s| s.return_cursor = items.return_cursor.is_checked());
-                } else if id == items.pinch_keys.id() {
-                    settings::update(|s| s.pinch_keys = items.pinch_keys.is_checked());
-                } else if id == items.login.id() {
-                    set_login(items.login.is_checked());
-                } else if id == items.ax.id() {
-                    open_settings("Privacy_Accessibility");
-                } else if id == items.input.id() {
-                    open_settings("Privacy_ListenEvent");
+                } else if id == items.settings.id() {
+                    show("general");
+                } else if id == items.about.id() {
+                    show("about");
                 }
             }
 
+            // Keep the menu and the settings page in step with the driver.
             let st = hid::status();
-            if shown.as_ref() != Some(&st) {
+            let s = settings::get();
+            if items.enabled.is_checked() != s.enabled {
+                items.enabled.set_checked(s.enabled);
+            }
+            let key = format!("{st:?}{s:?}");
+            if shown.as_ref() != Some(&key) {
                 items.status.set_text(format!("Edge Touch: {}", st.label()));
                 let _ = icon_handle.set_icon_with_as_template(Some(icon(st == hid::Status::On)), true);
-                shown = Some(st);
+                shown = Some(key);
+                last_push = Instant::now() - Duration::from_secs(10);
+            }
+            if let Some(w) = &win {
+                if last_push.elapsed() > Duration::from_secs(2) {
+                    let _ = w.view.evaluate_script(&format!("render({})", state_json()));
+                    last_push = Instant::now();
+                }
             }
         });
     }

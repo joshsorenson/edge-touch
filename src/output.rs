@@ -65,6 +65,11 @@ const HID_TYPE_ZOOM: i64 = 8;
 const HID_TAP: u32 = 0;
 const PIXEL_UNITS: u32 = 0;
 const CMD: u64 = 1 << 20;
+const CTRL: u64 = 1 << 18;
+/// Fn + numeric keypad: what a real arrow key press carries.
+const ARROW_FLAGS: u64 = (1 << 23) | (1 << 21);
+const KEY_UP: u16 = 0x7E;
+const KEY_DOWN: u16 = 0x7D;
 
 // Key codes.
 const KEY_LEFT_BRACKET: u16 = 0x21;
@@ -233,6 +238,9 @@ impl Output {
             Action::Zoom { at, amount, phase } => self.zoom(at, amount, phase, s.pinch_keys),
             Action::Back => self.key(KEY_LEFT_BRACKET, CMD),
             Action::Forward => self.key(KEY_RIGHT_BRACKET, CMD),
+            // Control + Up / Down arrow (arrows carry the Fn and keypad flags).
+            Action::MissionControl => self.key(KEY_UP, CTRL | ARROW_FLAGS),
+            Action::AppWindows => self.key(KEY_DOWN, CTRL | ARROW_FLAGS),
         }
     }
 }

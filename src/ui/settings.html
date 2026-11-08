@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edge Touch</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #ffffff; --ink: #1d1d1f; --ink-2: #6e6e73; --line: #e3e3e8;
+    --accent: #0a84ff; --on: #34c759; --warn: #ff9f0a; --off: #8e8e93;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1e1e20; --card: #2a2a2d; --ink: #f5f5f7; --ink-2: #a1a1a6; --line: #3a3a3d; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: var(--bg); color: var(--ink); -webkit-user-select: none; user-select: none;
+    display: flex; flex-direction: column;
+  }
+  nav { display: flex; justify-content: center; padding: 16px 16px 4px; }
+  .tabs { display: inline-flex; background: var(--line); border-radius: 9px; padding: 2px; }
+  .tabs button {
+    font: inherit; font-weight: 500; border: 0; background: transparent; color: var(--ink);
+    padding: 5px 18px; border-radius: 7px; cursor: default;
+  }
+  .tabs button[aria-selected="true"] { background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  main { flex: 1; overflow-y: auto; padding: 12px 20px 20px; }
+  section[hidden] { display: none; }
+  h2 { font-size: 12px; font-weight: 600; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 6px; }
+  h2:first-child { margin-top: 6px; }
+  .card { background: var(--card); border-radius: 10px; border: 1px solid var(--line); overflow: hidden; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; min-height: 48px; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row .text { flex: 1; min-width: 0; }
+  .row .title { font-weight: 500; }
+  .row .hint { color: var(--ink-2); font-size: 12.5px; margin-top: 1px; }
+  .status { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
+  .dot.on { background: var(--on); } .dot.warn { background: var(--warn); }
+  /* Toggle switch */
+  .switch { position: relative; width: 38px; height: 22px; flex: none; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: default; }
+  .switch span { position: absolute; inset: 0; border-radius: 11px; background: var(--line); transition: background .2s; pointer-events: none; }
+  .switch span::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .2s cubic-bezier(.22,1,.36,1);
+  }
+  .switch input:checked + span { background: var(--on); }
+  .switch input:checked + span::after { transform: translateX(16px); }
+  .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn {
+    font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+    border-radius: 6px; padding: 4px 12px; cursor: default; flex: none;
+  }
+  .btn:active { opacity: .7; }
+  .glyph { width: 30px; height: 30px; flex: none; color: var(--accent); }
+  .always { color: var(--ink-2); font-size: 12.5px; flex: none; }
+  .about { text-align: center; padding: 28px 20px 8px; }
+  .about svg { width: 72px; height: 72px; color: var(--accent); }
+  .about h1 { font-size: 22px; margin: 12px 0 2px; }
+  .about .ver { color: var(--ink-2); }
+  .about p { margin: 14px auto 0; max-width: 380px; color: var(--ink-2); }
+  .about .by { margin-top: 22px; color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  a:hover { text-decoration: underline; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<nav>
+  <div class="tabs" role="tablist">
+    <button role="tab" data-tab="general" aria-selected="true">General</button>
+    <button role="tab" data-tab="gestures">Gestures</button>
+    <button role="tab" data-tab="about">About</button>
+  </div>
+</nav>
+<main>
+  <section id="general">
+    <h2>Status</h2>
+    <div class="card">
+      <div class="row">
+        <div class="text status"><span class="dot" id="dot"></span><span id="status">Starting…</span></div>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Use the Edge as a touchscreen</div><div class="hint">Off hands the touch panel back to Edge Deck.</div></div>
+        <label class="switch"><input type="checkbox" data-key="enabled"><span></span></label>
+      </div>
+    </div>
+
+    <h2>Behavior</h2>
+    <div class="card">
+      <div class="row">
+        <div class="text"><div class="title">Return cursor to main screen</div><div class="hint">After each touch, the cursor goes back where it was.</div></div>
+        <label class="switch"><input type="checkbox" data-key="return_cursor"><span></span></label>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Open at login</div></div>
+        <label class="switch"><input type="checkbox" data-key="login"><span></span></label>
+      </div>
+    </div>
+
+    <h2>Permissions</h2>
+    <div class="card">
+      <div class="row">
+        <div class="text"><div class="title">Accessibility</div><div class="hint" id="ax-hint">Lets Edge Touch click and scroll.</div></div>
+        <button class="btn" data-open="accessibility">Open…</button>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Input Monitoring</div><div class="hint">Lets Edge Touch read the touch panel.</div></div>
+        <button class="btn" data-open="input">Open…</button>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Log</div><div class="hint">What Edge Touch has been doing, for troubleshooting.</div></div>
+        <button class="btn" data-open="log">Show</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="gestures" hidden>
+    <h2>One finger</h2>
+    <div class="card">
+      <div class="row">
+        <div class="text"><div class="title">Tap to click</div><div class="hint">Tap twice for a double-click.</div></div>
+        <span class="always">Always on</span>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Drag to scroll pages and lists</div><div class="hint">Everywhere else, dragging moves things (windows, sliders, icons). Off: dragging always moves things.</div></div>
+        <label class="switch"><input type="checkbox" data-key="drag_scrolls"><span></span></label>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Glide after a flick</div></div>
+        <label class="switch"><input type="checkbox" data-key="momentum"><span></span></label>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Flip scroll direction</div></div>
+        <label class="switch"><input type="checkbox" data-key="flip_scroll"><span></span></label>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Hold to right-click or drag</div><div class="hint">Hold still, then lift for a right-click, or move to drag anything.</div></div>
+        <span class="always">Always on</span>
+      </div>
+    </div>
+
+    <h2>Zoom</h2>
+    <div class="card">
+      <div class="row">
+        <div class="text"><div class="title">Tap, then drag to zoom</div><div class="hint">Tap once, touch again and drag down to zoom in, up to zoom out.</div></div>
+        <label class="switch"><input type="checkbox" data-key="zoom_drag"><span></span></label>
+      </div>
+      <div class="row">
+        <div class="text"><div class="title">Zoom with Cmd + and Cmd −</div><div class="hint">For apps that ignore trackpad-style zoom.</div></div>
+        <label class="switch"><input type="checkbox" data-key="pinch_keys"><span></span></label>
+      </div>
+    </div>
+
+    <h2>Edge swipes</h2>
+    <div class="card">
+      <div class="row">
+        <div class="text"><div class="title">Swipe in from the sides</div><div class="hint">From the left: Back. From the right: Forward. Up from the bottom: Mission Control. Down from the top: App windows.</div></div>
+        <label class="switch"><input type="checkbox" data-key="edge_swipes"><span></span></label>
+      </div>
+    </div>
+  </section>
+
+  <section id="about" hidden>
+    <div class="about">
+      <svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="13.5" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="18" cy="18" r="6" fill="currentColor"/></svg>
+      <h1>Edge Touch</h1>
+      <div class="ver" id="version"></div>
+      <p>Makes the Corsair XENEON Edge a real touchscreen on macOS. Tap, scroll and drag any app on the Edge, and your cursor goes back to your main screen when you're done.</p>
+      <p class="by">Made by Josh Sorenson<br><a data-open="website">joshsorenson.com</a></p>
+    </div>
+  </section>
+</main>
+<script>
+  const send = (msg) => window.ipc.postMessage(JSON.stringify(msg));
+
+  function show(tab) {
+    document.querySelectorAll("[role=tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+    document.querySelectorAll("main section").forEach((s) => (s.hidden = s.id !== tab));
+  }
+
+  // Called from Rust with the current settings and status.
+  function render(state) {
+    document.querySelectorAll("input[data-key]").forEach((el) => {
+      const key = el.dataset.key;
+      el.checked = key === "login" ? state.login : !!state.settings[key];
+    });
+    document.getElementById("status").textContent = state.status;
+    const dot = document.getElementById("dot");
+    dot.className = "dot " + (state.on ? "on" : state.settings.enabled ? "warn" : "");
+    document.getElementById("ax-hint").textContent = state.accessibility
+      ? "Allowed. Lets Edge Touch click and scroll."
+      : "Not allowed yet. Edge Touch can't click until it is.";
+    document.getElementById("version").textContent = "Version " + state.version;
+  }
+
+  document.querySelectorAll("[role=tab]").forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
+  document.querySelectorAll("input[data-key]").forEach((el) =>
+    el.addEventListener("change", () => send({ type: "set", key: el.dataset.key, value: el.checked }))
+  );
+  document.querySelectorAll("[data-open]").forEach((el) =>
+    el.addEventListener("click", (e) => { e.preventDefault(); send({ type: "open", what: el.dataset.open }); })
+  );
+  send({ type: "ready" });
+</script>
+</body>
+</html>

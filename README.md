@@ -12,18 +12,22 @@ macOS 27 treats the Edge's touch panel like a trackpad. Edge Touch takes the pan
 | One finger drag | Scroll, with a glide after a flick |
 | Hold, then drag | Click-and-drag (move windows, select text) |
 | Hold, then lift | Right-click |
-| Two finger drag | Scroll |
-| Pinch | Zoom |
-| Two finger tap | Right-click |
-| Three finger swipe | Right: Back. Left: Forward |
+| Tap, then touch and drag | Zoom (down: in, up: out) |
+| Swipe in from the left / right side | Back / Forward |
+| Swipe up from the bottom | Mission Control |
+| Swipe down from the top | App windows |
 
-## Menu
+Pinch, two-finger scroll and three-finger swipes are built in too, but the Edge never sends them to a Mac (see below).
 
-- Use the Edge as a touchscreen: on/off. Off hands the panel back to Edge Deck.
-- One finger scrolls: turn off to make one-finger drag a click-drag.
-- Glide after a flick, Flip scroll direction, Return cursor to main screen.
-- Pinch presses Cmd + / Cmd −: for apps that ignore the zoom gesture.
-- Open at login.
+## Why only one finger
+
+The panel is 5+ point multi-touch, but its firmware decides during USB enumeration whether the computer is Windows. macOS reads USB string descriptors length-first, the panel takes that as "not Windows", and it only ever sends one pointer through its mouse interface. The multi-finger digitizer interface stays silent, even after the standard "switch to multi-touch" request Windows sends. This happens before any app runs, so no Mac software can change it. See [hathach/tinyusb#4346](https://github.com/hathach/tinyusb/issues/4346) and [Myseri/xeneon-edge-multitouch-macos](https://github.com/Myseri/xeneon-edge-multitouch-macos).
+
+Ways around it: a small USB adapter (RP2040/RP2350 running TinyUSB) between the panel and the Mac that enumerates it the Windows way, or a firmware fix from Corsair.
+
+## Menu and settings
+
+The menu bar icon has the on/off switch (off hands the panel back to Edge Deck), Settings and About. Settings has General (cursor return, open at login, permissions, log), Gestures (every toggle) and About tabs.
 
 ## Permissions
 
@@ -53,4 +57,8 @@ Log: `~/Library/Application Support/EdgeTouch/edge-touch.log`.
 - `src/gesture.rs`: fingers to actions. Pure and unit tested.
 - `src/output.rs`: actions to macOS events.
 - `src/claim.rs`: the handoff with Edge Deck.
-- `src/settings.rs`: menu toggles, saved as JSON.
+- `src/ax.rs`: asks Accessibility what's under a finger (scroll or drag).
+- `src/settings.rs`: settings, saved as JSON.
+- `src/ui/settings.html`: the settings window (a web view).
+
+Diagnostic: create `~/Library/Application Support/EdgeTouch/listen` and restart the app. For 45 seconds it watches every interface without taking the panel over and logs which values arrive.

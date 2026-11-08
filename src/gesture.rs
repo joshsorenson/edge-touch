@@ -11,6 +11,14 @@
 //! - Hold, then lift: right-click.
 //! - Two fingers: drag to scroll, pinch to zoom, tap to right-click.
 //! - Three fingers: swipe right for Back, left for Forward.
+//! - Tap, then touch again and drag: zoom (down zooms in, up zooms out).
+//! - Swipe in from the Edge's left or right side: Back / Forward.
+//! - Swipe up from the bottom: Mission Control. Down from the top: App
+//!   windows.
+//!
+//! The Edge only reports one finger to the Mac, so the one-finger gestures are
+//! the ones that matter. The multi-finger ones are kept for touch panels that
+//! report every finger.
 
 /// A point in global screen points (CoreGraphics coordinates, y down).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,6 +70,8 @@ pub enum Action {
     Zoom { at: Pt, amount: f64, phase: Phase },
     Back,
     Forward,
+    MissionControl,
+    AppWindows,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -70,11 +80,17 @@ pub struct Options {
     pub drag_scrolls: bool,
     /// Keep scrolling for a moment after a flick.
     pub momentum: bool,
+    /// Tap, then touch and drag up or down to zoom.
+    pub zoom_drag: bool,
+    /// Swipes in from the screen's sides.
+    pub edge_swipes: bool,
+    /// The screen's bounds (x, y, w, h), for edge swipes.
+    pub bounds: Option<(f64, f64, f64, f64)>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { drag_scrolls: true, momentum: true }
+        Options { drag_scrolls: true, momentum: true, zoom_drag: true, edge_swipes: true, bounds: None }
     }
 }
 
@@ -99,6 +115,20 @@ const DECAY_PER_SEC: f64 = 0.06;
 const MIN_SPEED: f64 = 40.0;
 /// Only the last bit of a drag counts toward flick speed.
 const VELOCITY_WINDOW: f64 = 0.08;
+/// Edge swipes start this close (points) to a side of the screen.
+const EDGE_ZONE: f64 = 28.0;
+/// How far an edge swipe travels (points) before it fires.
+const EDGE_SWIPE: f64 = 90.0;
+/// Zoom per point dragged in tap-then-drag zoom.
+const ZOOM_PER_POINT: f64 = 0.006;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TwoMode {
@@ -111,7 +141,10 @@ enum TwoMode {
 enum State {
     Idle,
     /// One finger down, not yet a tap, scroll, drag or hold.
-    Pending { id: u32, start: Pt, t0: f64, held: bool },
+    Pending { id: u32, start: Pt, t0: f64, held: bool, second: bool },
+    /// Tap-then-drag zoom.
+    Zooming { id: u32, at: Pt, last: Pt },
+    EdgeSwipe { id: u32, side: Side, start: Pt },
     Scrolling { id: u32, at: Pt, last: Pt, samples: Vec<(f64, Pt)> },
     Dragging { id: u32, last: Pt },
     Two { t0: f64, at: Pt, start_c: Pt, start_d: f64, last_c: Pt, last_d: f64, mode: TwoMode, samples: Vec<(f64, Pt)> },
@@ -204,6 +237,7 @@ impl Recognizer {
             State::Two { at, mode: TwoMode::Scroll, .. } => out.push(Action::Scroll { at, dx: 0.0, dy: 0.0, phase: Phase::Ended }),
             State::Two { at, mode: TwoMode::Pinch, .. } => out.push(Action::Zoom { at, amount: 0.0, phase: Phase::Ended }),
             State::Coast { at, began: true, .. } => out.push(Action::Momentum { at, dx: 0.0, dy: 0.0, phase: Phase::Ended }),
+            State::Zooming { at, .. } => out.push(Action::Zoom { at, amount: 0.0, phase: Phase::Ended }),
             _ => {}
         }
         self.finish(&mut out);
@@ -243,7 +277,10 @@ impl Recognizer {
             1 => {
                 self.save(out);
                 out.push(Action::MoveTo(ts[0].1));
-                self.state = State::Pending { id: ts[0].0, start: ts[0].1, t0: t, held: false };
+                // Touching again right where you just tapped: a double-tap,
+                // or the start of tap-then-drag zoom.
+                let second = matches!(self.last_click, Some((lt, lp, _)) if t - lt <= DOUBLE_TIME && lp.dist(ts[0].1) <= DOUBLE_DIST);
+                self.state = State::Pending { id: ts[0].0, start: ts[0].1, t0: t, held: false, second };
             }
             2 => self.begin_two(t, ts, out),
             _ => {
@@ -269,6 +306,25 @@ impl Recognizer {
             self.finish(out);
         } else {
             self.state = State::Wait;
+        }
+    }
+
+    /// The side a touch started at, if it began at a side of the screen and
+    /// is moving inward from it.
+    fn edge_side(&self, start: Pt, now: Pt) -> Option<Side> {
+        let (x, y, w, h) = self.opts.bounds?;
+        let (dx, dy) = (now.x - start.x, now.y - start.y);
+        let across = dx.abs() > dy.abs();
+        if across && dx > 0.0 && start.x - x <= EDGE_ZONE {
+            Some(Side::Left)
+        } else if across && dx < 0.0 && x + w - start.x <= EDGE_ZONE {
+            Some(Side::Right)
+        } else if !across && dy < 0.0 && y + h - start.y <= EDGE_ZONE {
+            Some(Side::Bottom)
+        } else if !across && dy > 0.0 && start.y - y <= EDGE_ZONE {
+            Some(Side::Top)
+        } else {
+            None
         }
     }
 
@@ -310,7 +366,40 @@ impl Recognizer {
                 }
             }
 
-            State::Pending { id, start, t0, held } => {
+            State::Zooming { id, at, last } => match ts.iter().find(|x| x.0 == id) {
+                Some(&(_, p)) => {
+                    if p.y != last.y {
+                        out.push(Action::Zoom { at, amount: (p.y - last.y) * ZOOM_PER_POINT, phase: Phase::Changed });
+                    }
+                    self.state = State::Zooming { id, at, last: p };
+                }
+                None => {
+                    out.push(Action::Zoom { at, amount: 0.0, phase: Phase::Ended });
+                    if n == 0 { self.finish(out) } else { self.state = State::Wait }
+                }
+            },
+
+            State::EdgeSwipe { id, side, start } => match ts.iter().find(|x| x.0 == id) {
+                Some(&(_, p)) => {
+                    let (dx, dy) = (p.x - start.x, p.y - start.y);
+                    let fired = match side {
+                        Side::Left if dx >= EDGE_SWIPE => Some(Action::Back),
+                        Side::Right if -dx >= EDGE_SWIPE => Some(Action::Forward),
+                        Side::Bottom if -dy >= EDGE_SWIPE => Some(Action::MissionControl),
+                        Side::Top if dy >= EDGE_SWIPE => Some(Action::AppWindows),
+                        _ => None,
+                    };
+                    if let Some(a) = fired {
+                        out.push(a);
+                        self.state = State::Wait;
+                    }
+                }
+                None => {
+                    if n == 0 { self.finish(out) } else { self.state = State::Wait }
+                }
+            },
+
+            State::Pending { id, start, t0, held, second } => {
                 let held = held || t - t0 >= HOLD;
                 if n == 0 {
                     if held {
@@ -325,7 +414,14 @@ impl Recognizer {
                 } else {
                     let p = ts.iter().find(|x| x.0 == id).map(|x| x.1).unwrap_or(ts[0].1);
                     if p.dist(start) <= SLOP {
-                        self.state = State::Pending { id, start, t0, held };
+                        self.state = State::Pending { id, start, t0, held, second };
+                    } else if second && !held && self.opts.zoom_drag {
+                        out.push(Action::Zoom { at: start, amount: 0.0, phase: Phase::Began });
+                        out.push(Action::Zoom { at: start, amount: (p.y - start.y) * ZOOM_PER_POINT, phase: Phase::Changed });
+                        self.state = State::Zooming { id, at: start, last: p };
+                    } else if let Some(side) = self.edge_side(start, p).filter(|_| !held && self.opts.edge_swipes) {
+                        self.state = State::EdgeSwipe { id, side, start };
+                        return self.step(t, ts, out);
                     } else if self.opts.drag_scrolls && !held {
                         out.push(Action::Scroll { at: start, dx: p.x - start.x, dy: p.y - start.y, phase: Phase::Began });
                         self.state = State::Scrolling { id, at: start, last: p, samples: vec![(t0, start), (t, p)] };
@@ -532,6 +628,47 @@ mod tests {
         r.frame(&f(0.0, &[(1, 10.0, 10.0)]));
         let a = r.frame(&f(0.05, &[(1, 40.0, 10.0)]));
         assert_eq!(a, vec![Action::Down(Pt::new(10.0, 10.0), 1), Action::Drag(Pt::new(40.0, 10.0))]);
+    }
+
+    #[test]
+    fn tap_then_drag_zooms() {
+        let mut r = Recognizer::default();
+        r.frame(&f(0.0, &[(1, 100.0, 100.0)]));
+        r.frame(&f(0.08, &[]));
+        r.frame(&f(0.2, &[(2, 102.0, 100.0)]));
+        let a = r.frame(&f(0.3, &[(2, 102.0, 150.0)]));
+        assert_eq!(a[0], Action::Zoom { at: Pt::new(102.0, 100.0), amount: 0.0, phase: Phase::Began });
+        assert!(matches!(a[1], Action::Zoom { phase: Phase::Changed, amount, .. } if amount > 0.0));
+        let a = r.frame(&f(0.4, &[]));
+        assert_eq!(a[0], Action::Zoom { at: Pt::new(102.0, 100.0), amount: 0.0, phase: Phase::Ended });
+    }
+
+    #[test]
+    fn swipe_in_from_left_side_goes_back() {
+        let mut r = Recognizer::default();
+        r.opts.bounds = Some((0.0, 0.0, 2560.0, 720.0));
+        r.frame(&f(0.0, &[(1, 5.0, 300.0)]));
+        assert!(r.frame(&f(0.05, &[(1, 40.0, 302.0)])).is_empty());
+        assert_eq!(r.frame(&f(0.1, &[(1, 120.0, 305.0)])), vec![Action::Back]);
+        assert_eq!(r.frame(&f(0.2, &[])), vec![Action::RestoreCursor]);
+    }
+
+    #[test]
+    fn swipe_up_from_bottom_opens_mission_control() {
+        let mut r = Recognizer::default();
+        r.opts.bounds = Some((0.0, 0.0, 2560.0, 720.0));
+        r.frame(&f(0.0, &[(1, 1000.0, 715.0)]));
+        r.frame(&f(0.05, &[(1, 1000.0, 690.0)]));
+        assert_eq!(r.frame(&f(0.1, &[(1, 1002.0, 600.0)])), vec![Action::MissionControl]);
+    }
+
+    #[test]
+    fn drag_in_the_middle_is_not_an_edge_swipe() {
+        let mut r = Recognizer::default();
+        r.opts.bounds = Some((0.0, 0.0, 2560.0, 720.0));
+        r.frame(&f(0.0, &[(1, 500.0, 300.0)]));
+        let a = r.frame(&f(0.05, &[(1, 640.0, 300.0)]));
+        assert!(matches!(a[0], Action::Scroll { phase: Phase::Began, .. }));
     }
 
     #[test]

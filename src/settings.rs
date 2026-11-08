@@ -18,13 +18,17 @@ pub struct Settings {
     pub flip_scroll: bool,
     /// After each touch, put the cursor back on the main screen.
     pub return_cursor: bool,
-    /// Pinch presses Cmd + / Cmd - instead of sending a zoom gesture.
+    /// Zoom presses Cmd + / Cmd - instead of sending a zoom gesture.
     pub pinch_keys: bool,
+    /// Tap, then touch and drag up or down to zoom.
+    pub zoom_drag: bool,
+    /// Swipe in from the sides for Back, Forward, Mission Control, App windows.
+    pub edge_swipes: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { enabled: true, drag_scrolls: true, momentum: true, flip_scroll: false, return_cursor: true, pinch_keys: false }
+        Settings { enabled: true, drag_scrolls: true, momentum: true, flip_scroll: false, return_cursor: true, pinch_keys: false, zoom_drag: true, edge_swipes: true }
     }
 }
 
