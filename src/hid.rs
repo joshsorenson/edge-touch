@@ -109,6 +109,8 @@ struct Slots {
     digitizer_seen: bool,
     /// Values logged so far (the first few go to the log for debugging).
     logged: u32,
+    /// Values received since the last health line in the log.
+    values: u32,
 }
 
 impl Slots {
@@ -259,6 +261,7 @@ extern "C" fn on_value(ctx: *mut c_void, _result: i32, _sender: Ref, value: Ref)
             _ => return,
         }
         slots.dirty = true;
+        slots.values += 1;
     }
 }
 
@@ -377,6 +380,15 @@ unsafe fn run() {
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
+        // Just plugged back in: give macOS a few seconds to finish setting
+        // the panel up, or we can grab it half-ready and get no touches.
+        if status() == Status::NotFound {
+            release_all(&devices);
+            log("touch panel is back; waiting for it to settle");
+            std::thread::sleep(Duration::from_secs(4));
+            set_status(Status::Starting);
+            continue;
+        }
         // Read fingers from the digitizer only. The mouse-emulation interface
         // reports the same touch again, which would look like a second finger.
         let has_digitizer = devices.iter().any(|&d| prop_i64(d, "PrimaryUsagePage") == PAGE_DIGITIZER as i64);
@@ -421,20 +433,8 @@ unsafe fn run() {
             // asks, which gives one finger through the mouse interface only.
             if has_digitizer {
                 for &dev in devices.iter().filter(|&&d| prop_i64(d, "PrimaryUsagePage") == PAGE_DIGITIZER as i64) {
-                    // Windows reads "Contact Count Maximum" (feature 0x0A)
-                    // before switching modes, and some panels wait for that.
-                    let mut max = [0u8; 4];
-                    max[0] = 0x0A;
-                    let mut mlen: isize = max.len() as isize;
-                    let mrc = IOHIDDeviceGetReport(dev, REPORT_FEATURE, 0x0A, max.as_mut_ptr(), &mut mlen);
-                    log(&format!("contact count max: {mrc:#x} {:?}", &max[..mlen.max(0) as usize]));
                     let report = [DEVICE_MODE_REPORT as u8, 2u8, 0u8];
                     let rc = IOHIDDeviceSetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, report.as_ptr(), report.len() as isize);
-                    // Same request without the report id byte, in case the
-                    // controller wants it that way.
-                    let bare = [2u8, 0u8];
-                    let rc2 = IOHIDDeviceSetReport(dev, REPORT_FEATURE, DEVICE_MODE_REPORT, bare.as_ptr(), bare.len() as isize);
-                    log(&format!("device mode (no id byte): {rc2:#x}"));
                     let mut back = [0u8; 8];
                     let mut len: isize = back.len() as isize;
                     back[0] = DEVICE_MODE_REPORT as u8;
@@ -445,6 +445,7 @@ unsafe fn run() {
             set_status(Status::On);
             let mut edge = edge_rect();
             let mut ticks = 0u32;
+            let mut health = 0u32;
             let mut fingers_before = 0usize;
             let mut here_scrolls = true;
             loop {
@@ -485,6 +486,12 @@ unsafe fn run() {
                 if ticks % 125 == 0 {
                     crate::claim::heartbeat();
                     edge = edge_rect();
+                }
+                // Health line every ~5 s while touches arrive (first 30 only).
+                if ticks % 625 == 0 && (*slots).values > 0 && health < 30 {
+                    health += 1;
+                    log(&format!("touch data: {} values in 5s, edge {:?}, fingers now {}", (*slots).values, edge, (*slots).fingers().len()));
+                    (*slots).values = 0;
                 }
                 if ticks % 375 == 0 && count_devices() != devices.len() {
                     log("touch panel unplugged; looking for it again");

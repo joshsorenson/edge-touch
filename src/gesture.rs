@@ -107,8 +107,8 @@ const SCROLL_START: f64 = 8.0;
 /// Three-finger sideways travel (points) for Back / Forward.
 const SWIPE: f64 = 120.0;
 /// A second tap within this time and distance makes a double-click.
-const DOUBLE_TIME: f64 = 0.4;
-const DOUBLE_DIST: f64 = 24.0;
+const DOUBLE_TIME: f64 = 0.5;
+const DOUBLE_DIST: f64 = 40.0;
 /// Momentum: speed left after one second (fraction), and the speed (points per
 /// second) where it stops.
 const DECAY_PER_SEC: f64 = 0.06;
