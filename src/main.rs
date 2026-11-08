@@ -163,6 +163,8 @@ mod app {
         let proxy = proxy.clone();
         let view = WebViewBuilder::new()
             .with_html(include_str!("ui/settings.html"))
+            // Take the first tap even when the window isn't active.
+            .with_accept_first_mouse(true)
             .with_ipc_handler(move |req| {
                 let _ = proxy.send_event(UserEvent::Ipc(req.body().clone()));
             })
@@ -190,6 +192,8 @@ mod app {
         let proxy = proxy.clone();
         let view = WebViewBuilder::new()
             .with_html(include_str!("ui/tour.html"))
+            // Take the first tap even when the window isn't active.
+            .with_accept_first_mouse(true)
             .with_ipc_handler(move |req| {
                 let _ = proxy.send_event(UserEvent::Tour(req.body().clone()));
             })
