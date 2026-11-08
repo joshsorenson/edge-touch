@@ -68,6 +68,26 @@ fn set_status(s: Status) {
     }
 }
 
+/// Whether Input Monitoring is allowed. macOS's own check can lag behind the
+/// switch in Settings, so touch being on also counts.
+pub fn input_monitoring_ok() -> bool {
+    let allowed = unsafe { IOHIDCheckAccess(REQUEST_LISTEN_EVENT) == 0 };
+    allowed || status() == Status::On
+}
+
+/// Show macOS's Input Monitoring prompt (the first time; after that macOS
+/// only lets you change it in Settings).
+pub fn request_input_monitoring() {
+    unsafe {
+        IOHIDRequestAccess(REQUEST_LISTEN_EVENT);
+    }
+}
+
+/// Whether a touch panel is plugged in.
+pub fn panel_found() -> bool {
+    unsafe { count_devices() > 0 }
+}
+
 /// The Edge's bounds in global points: the widest display at least 3x as wide
 /// as it is tall.
 pub fn edge_rect() -> Option<(f64, f64, f64, f64)> {
@@ -149,6 +169,7 @@ extern "C" {
     fn IOHIDElementGetParent(element: Ref) -> Ref;
     fn IOHIDElementGetCookie(element: Ref) -> u32;
     fn IOHIDRequestAccess(request_type: u32) -> bool;
+    fn IOHIDCheckAccess(request_type: u32) -> u32;
     fn IOHIDDeviceGetReport(device: Ref, report_type: u32, report_id: isize, report: *mut u8, len: *mut isize) -> i32;
     fn IOHIDDeviceSetReport(device: Ref, report_type: u32, report_id: isize, report: *const u8, len: isize) -> i32;
 }
@@ -348,14 +369,14 @@ pub fn start() {
 
 unsafe fn run() {
     // Shows the Input Monitoring prompt the first time.
-    IOHIDRequestAccess(REQUEST_LISTEN_EVENT);
+    // No permission prompts here: the setup window asks, one at a time, with
+    // an explanation. Until then, seizing fails and the status says why.
     let slots: *mut Slots = Box::into_raw(Box::default());
     let run_loop = CFRunLoop::get_current().as_concrete_TypeRef() as Ref;
     let mode = kCFRunLoopDefaultMode as Ref;
     let mut out = Output::new();
     let mut gestures = Recognizer::default();
     let clock = Instant::now();
-    let mut asked_ax = false;
     listen_diagnostic(run_loop);
 
     loop {
@@ -366,8 +387,7 @@ unsafe fn run() {
             std::thread::sleep(Duration::from_millis(500));
             continue;
         }
-        if !crate::output::accessibility_ok(!asked_ax) {
-            asked_ax = true;
+        if !crate::output::accessibility_ok(false) {
             set_status(Status::NeedsAccessibility);
             std::thread::sleep(Duration::from_secs(1));
             continue;

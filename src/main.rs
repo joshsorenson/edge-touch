@@ -105,6 +105,7 @@ mod app {
         enabled: CheckMenuItem,
         settings: MenuItem,
         tour: MenuItem,
+        setup: MenuItem,
         about: MenuItem,
         quit: MenuItem,
     }
@@ -115,12 +116,13 @@ mod app {
             enabled: CheckMenuItem::new("Use the Edge as a touchscreen", true, s.enabled, None),
             settings: MenuItem::new("Settings…", true, None),
             tour: MenuItem::new("Try the Gestures…", true, None),
+            setup: MenuItem::new("Set Up Permissions…", true, None),
             about: MenuItem::new("About Edge Touch", true, None),
             quit: MenuItem::new("Quit Edge Touch", true, None),
         };
         let menu = Menu::new();
         let sep = || PredefinedMenuItem::separator();
-        let _ = menu.append_items(&[&items.status, &sep(), &items.enabled, &sep(), &items.settings, &items.tour, &items.about, &sep(), &items.quit]);
+        let _ = menu.append_items(&[&items.status, &sep(), &items.enabled, &sep(), &items.settings, &items.tour, &items.setup, &items.about, &sep(), &items.quit]);
         (menu, items)
     }
 
@@ -130,6 +132,8 @@ mod app {
         Ipc(String),
         /// From the gesture tour.
         Tour(String),
+        /// From the permissions setup.
+        Setup(String),
     }
 
     /// The settings window and its web view.
@@ -205,6 +209,48 @@ mod app {
         Some(SettingsWindow { window, view })
     }
 
+    /// The permissions setup, on the main screen (touch doesn't work yet).
+    fn open_setup(target: &EventLoopWindowTarget<UserEvent>, proxy: &EventLoopProxy<UserEvent>) -> Option<SettingsWindow> {
+        let window = WindowBuilder::new()
+            .with_title("Set Up Edge Touch")
+            .with_inner_size(LogicalSize::new(820.0, 540.0))
+            .with_resizable(false)
+            .build(target)
+            .map_err(|e| settings::log(&format!("setup window: {e}")))
+            .ok()?;
+        let proxy = proxy.clone();
+        let view = WebViewBuilder::new()
+            .with_html(include_str!("ui/setup.html"))
+            .with_accept_first_mouse(true)
+            .with_ipc_handler(move |req| {
+                let _ = proxy.send_event(UserEvent::Setup(req.body().clone()));
+            })
+            .build(&window)
+            .map_err(|e| settings::log(&format!("setup view: {e}")))
+            .ok()?;
+        window.set_focus();
+        Some(SettingsWindow { window, view })
+    }
+
+    /// What the setup page shows: each permission and the connection checks.
+    fn setup_state() -> String {
+        let st = hid::status();
+        json!({
+            "ax": crate::output::accessibility_ok(false),
+            "input": hid::input_monitoring_ok(),
+            "edge": hid::edge_rect().is_some(),
+            "panel": hid::panel_found(),
+            "on": st == hid::Status::On,
+            "status": st.label(),
+        })
+        .to_string()
+    }
+
+    /// Both permissions are in place.
+    fn permitted() -> bool {
+        crate::output::accessibility_ok(false) && hid::input_monitoring_ok()
+    }
+
     fn tour_status() -> String {
         let st = hid::status();
         json!({ "on": st == hid::Status::On, "label": st.label() }).to_string()
@@ -255,6 +301,9 @@ mod app {
         let mut tour: Option<SettingsWindow> = None;
         let mut open_settings_tab: Option<&str> = None;
         let mut tour_started = false;
+        let mut setup: Option<SettingsWindow> = None;
+        let mut open_tour_now = false;
+        let mut last_setup_push = Instant::now();
         let mut shown: Option<String> = None;
         let mut last_push = Instant::now();
         let menu_events = MenuEvent::receiver();
@@ -297,8 +346,36 @@ mod app {
                         let _ = t.view.evaluate_script(&format!("setStatus({})", tour_status()));
                     }
                 }
+                Event::UserEvent(UserEvent::Setup(body)) => {
+                    let msg: Value = serde_json::from_str(body).unwrap_or_default();
+                    match msg["type"].as_str() {
+                        Some("step") => settings::log(&format!("setup: {}", msg["id"].as_str().unwrap_or("?"))),
+                        Some("open_ax") => {
+                            // macOS's own prompt, which offers to open Settings,
+                            // plus the pane itself in case the prompt was used up.
+                            crate::output::accessibility_ok(true);
+                            open_settings("Privacy_Accessibility");
+                        }
+                        Some("ask_input") => {
+                            hid::request_input_monitoring();
+                            open_settings("Privacy_ListenEvent");
+                        }
+                        Some("open_input_settings") => open_settings("Privacy_ListenEvent"),
+                        Some("later") => setup = None,
+                        Some("tour") => {
+                            setup = None;
+                            open_tour_now = true;
+                        }
+                        _ => {}
+                    }
+                    if let Some(w) = &setup {
+                        let _ = w.view.evaluate_script(&format!("update({})", setup_state()));
+                    }
+                }
                 Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } => {
-                    if tour.as_ref().map(|t| t.window.id()) == Some(*window_id) {
+                    if setup.as_ref().map(|t| t.window.id()) == Some(*window_id) {
+                        setup = None;
+                    } else if tour.as_ref().map(|t| t.window.id()) == Some(*window_id) {
                         crate::tour::set_active(false);
                         tour = None;
                     } else {
@@ -324,9 +401,12 @@ mod app {
                 show(tab);
             }
 
-            // First launch: the tour. Later: from the menu.
-            let mut start_tour = !tour_started && !settings::get().onboarded;
+            // First launch: permissions setup if anything's missing, else the
+            // gesture tour (if it hasn't been done). Later: from the menu.
+            let first = !tour_started;
             tour_started = true;
+            let mut start_setup = first && !permitted();
+            let mut start_tour = std::mem::take(&mut open_tour_now) || (first && !start_setup && !settings::get().onboarded);
 
             while let Ok(ev) = menu_events.try_recv() {
                 let id = ev.id();
@@ -343,6 +423,14 @@ mod app {
                     show("about");
                 } else if id == items.tour.id() {
                     start_tour = true;
+                } else if id == items.setup.id() {
+                    start_setup = true;
+                }
+            }
+            if start_setup {
+                match &setup {
+                    Some(w) => w.window.set_focus(),
+                    None => setup = open_setup(target, &proxy),
                 }
             }
             if start_tour {
@@ -379,6 +467,14 @@ mod app {
                     let _ = t.view.evaluate_script(&format!("setStatus({})", tour_status()));
                 }
                 last_push = Instant::now();
+            }
+            // The setup page updates every second, so a permission turning on
+            // in Settings shows up right away.
+            if let Some(w) = &setup {
+                if last_setup_push.elapsed() >= Duration::from_secs(1) {
+                    let _ = w.view.evaluate_script(&format!("update({})", setup_state()));
+                    last_setup_push = Instant::now();
+                }
             }
         });
     }

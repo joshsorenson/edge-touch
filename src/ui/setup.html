@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set Up Edge Touch</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --side: #ececf0; --card: #ffffff; --ink: #1d1d1f; --ink-2: #6e6e73; --line: #e0e0e6;
+    --accent: #0a84ff; --good: #28a745; --warn: #c77700;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1e1e20; --side: #252528; --card: #2c2c2f; --ink: #f5f5f7; --ink-2: #a1a1a6; --line: #3a3a3e; --good: #32d74b; --warn: #ffb340; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: var(--bg); color: var(--ink); -webkit-user-select: none; user-select: none;
+    display: grid; grid-template-columns: 220px 1fr; overflow: hidden;
+  }
+  aside { background: var(--side); border-right: 1px solid var(--line); padding: 28px 18px; display: flex; flex-direction: column; gap: 4px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; margin: 0 6px 22px; }
+  .brand svg { width: 28px; height: 28px; }
+  .step { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--ink-2); }
+  .step .n { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid currentColor; display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none; transition: background .25s, border-color .25s, color .25s; }
+  .step.now { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .step.now .n { border-color: var(--accent); color: var(--accent); }
+  .step.done .n { background: var(--good); border-color: var(--good); color: #fff; }
+
+  main { display: flex; flex-direction: column; padding: 40px 44px 28px; min-width: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; }
+  .pane.enter { animation: enter .4s var(--ease) both; }
+  @keyframes enter { from { opacity: 0; transform: translateX(10px); filter: blur(2px); } }
+  h1 { font-size: 26px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -0.01em; }
+  p { margin: 0 0 12px; color: var(--ink-2); max-width: 46ch; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-top: 10px; }
+  ol.how { margin: 0; padding-left: 20px; color: var(--ink); }
+  ol.how li { margin: 6px 0; }
+  kbd { font: inherit; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 14px; padding: 5px 12px; border-radius: 999px; background: var(--side); margin-top: 18px; align-self: flex-start; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+  .pill.ok { color: var(--good); }
+  .pill.ok i { background: var(--good); }
+  .pill.wait i { animation: blink 1.2s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+  .checks { list-style: none; padding: 0; margin: 14px 0 0; }
+  .checks li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .checks li:last-child { border: 0; }
+  .checks .dot { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; background: var(--line); flex: none; }
+  .checks .ok .dot { background: var(--good); }
+  .checks .hint { color: var(--ink-2); font-size: 13px; margin-left: auto; text-align: right; }
+  footer .btn, footer .link { white-space: nowrap; }
+  footer { display: flex; gap: 10px; justify-content: flex-end; align-items: center; padding-top: 18px; }
+  footer .spacer { flex: 1; }
+  .btn { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 18px; background: var(--accent); color: #fff; cursor: default; }
+  .btn.secondary { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .45; }
+  .btn:active:not(:disabled) { transform: scale(.98); }
+  .link { font: inherit; color: var(--ink-2); background: none; border: 0; padding: 6px; cursor: default; }
+  @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand">
+    <svg viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="8" fill="#2f86f6"/><circle cx="18" cy="18" r="9.5" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="18" cy="18" r="3.8" fill="#fff"/></svg>
+    Edge Touch
+  </div>
+  <div id="steps"></div>
+</aside>
+<main>
+  <div class="pane" id="pane"></div>
+  <footer id="footer"></footer>
+</main>
+<script>
+  const send = (msg) => window.ipc.postMessage(JSON.stringify(msg));
+
+  // Latest state from the app (pushed every second).
+  let state = { ax: false, input: false, edge: false, panel: false, on: false, status: "" };
+  let i = 0;
+
+  const STEPS = [
+    { id: "welcome", label: "Welcome" },
+    { id: "ax", label: "Accessibility", ok: () => state.ax },
+    { id: "input", label: "Input Monitoring", ok: () => state.input },
+    { id: "connect", label: "Connect the Edge", ok: () => state.on },
+  ];
+
+  const PANES = {
+    welcome: () => `
+      <h1>Make the Edge a touchscreen</h1>
+      <p>Edge Touch lets you tap, scroll and drag any app on your Corsair XENEON Edge, then puts your cursor back on your main screen.</p>
+      <p>macOS needs two permissions first. This takes about a minute, and nothing leaves your Mac.</p>`,
+    ax: () => `
+      <h1>Allow Accessibility</h1>
+      <p>This lets Edge Touch click, scroll and drag for you, the way a mouse would.</p>
+      <div class="card"><ol class="how">
+        <li>Click <kbd>Open Accessibility Settings</kbd> below.</li>
+        <li>Turn on <kbd>Edge Touch</kbd> in the list. macOS may ask for your password.</li>
+        <li>Not in the list? Click <kbd>+</kbd> and pick Edge Touch from Applications.</li>
+      </ol></div>
+      ${pill(state.ax, "Allowed", "Waiting for Accessibility…")}`,
+    input: () => `
+      <h1>Allow Input Monitoring</h1>
+      <p>This lets Edge Touch read the Edge's touch panel. It only listens to the Edge, never your keyboard.</p>
+      <div class="card"><ol class="how">
+        <li>Click <kbd>Allow Input Monitoring</kbd> below, then <kbd>Open System Settings</kbd> in the macOS prompt.</li>
+        <li>Turn on <kbd>Edge Touch</kbd>.</li>
+        <li>If macOS offers <kbd>Quit &amp; Reopen</kbd>, click it. Edge Touch comes right back to this step.</li>
+      </ol></div>
+      ${pill(state.input, "Allowed", "Waiting for Input Monitoring…")}`,
+    connect: () => `
+      <h1>${state.on ? "Touch is on" : "Connect the Edge"}</h1>
+      <p>${state.on ? "Everything checks out. Next, a short tour on the Edge shows you each gesture." : "Make sure the Edge's USB-C cable is plugged into this Mac, not just its display cable."}</p>
+      <ul class="checks">
+        ${check(state.edge, "Edge display found", state.edge ? "" : "Connect the Edge's display")}
+        ${check(state.panel, "Touch panel found", state.panel ? "" : "Plug in the USB-C cable")}
+        ${check(state.on, "Reading touches", state.on ? "" : state.status)}
+      </ul>`,
+  };
+
+  function pill(ok, yes, no) {
+    return `<span class="pill ${ok ? "ok" : "wait"}"><i></i>${ok ? yes : no}</span>`;
+  }
+  function check(ok, label, hint) {
+    return `<li class="${ok ? "ok" : ""}"><span class="dot">${ok ? "✓" : ""}</span>${label}<span class="hint">${hint || ""}</span></li>`;
+  }
+
+  function footer() {
+    const id = STEPS[i].id;
+    const back = i > 0 ? `<button class="link" data-act="back">Back</button>` : "";
+    const later = `<button class="link" data-act="later">Set up later</button>`;
+    let main = "";
+    if (id === "welcome") main = `<button class="btn" data-act="next">Get Started</button>`;
+    if (id === "ax") main = state.ax
+      ? `<button class="btn" data-act="next">Continue</button>`
+      : `<button class="btn" data-act="open_ax">Open Accessibility Settings</button>`;
+    if (id === "input") main = state.input
+      ? `<button class="btn" data-act="next">Continue</button>`
+      : `<button class="btn secondary" data-act="open_input_settings">Open Settings</button><button class="btn" data-act="ask_input">Allow Input Monitoring</button>`;
+    if (id === "connect") main = `<button class="btn" data-act="tour" ${state.on ? "" : "disabled"}>Try the Gestures</button>`;
+    return `${back}${id === "connect" && state.on ? "" : later}<span class="spacer"></span>${main}`;
+  }
+
+  let shown = "";
+  function render(animate) {
+    document.getElementById("steps").innerHTML = STEPS.map((s, n) =>
+      `<div class="step ${n === i ? "now" : ""} ${s.ok && s.ok() && n !== i ? "done" : ""}"><span class="n">${s.ok && s.ok() && n !== i ? "✓" : n + 1}</span>${s.label}</div>`).join("");
+    const html = PANES[STEPS[i].id]();
+    const pane = document.getElementById("pane");
+    if (html !== shown) {
+      pane.innerHTML = html;
+      shown = html;
+      pane.className = "pane" + (animate ? " enter" : "");
+    }
+    document.getElementById("footer").innerHTML = footer();
+  }
+
+  function go(n) {
+    i = Math.max(0, Math.min(STEPS.length - 1, n));
+    send({ type: "step", id: STEPS[i].id });
+    render(true);
+  }
+
+  // Skip past steps that are already done (e.g. after Quit & Reopen).
+  function firstOpen() {
+    const n = STEPS.findIndex((s, k) => k > 0 && s.ok && !s.ok());
+    return n === -1 ? STEPS.length - 1 : n;
+  }
+
+  // Called by the app with fresh state.
+  let started = false;
+  function update(next) {
+    const was = { ...state };
+    state = next;
+    if (!started) {
+      started = true;
+      i = next.ax || next.input ? firstOpen() : 0;
+      render(true);
+      return;
+    }
+    // A permission just came through: move on by itself.
+    const id = STEPS[i].id;
+    if ((id === "ax" && state.ax && !was.ax) || (id === "input" && state.input && !was.input)) {
+      render(false);
+      setTimeout(() => go(i + 1), 900);
+      return;
+    }
+    render(false);
+  }
+
+  document.getElementById("footer").addEventListener("click", (e) => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (!act) return;
+    if (act === "next") go(i + 1);
+    else if (act === "back") go(i - 1);
+    else send({ type: act });
+  });
+  send({ type: "ready" });
+</script>
+</body>
+</html>
