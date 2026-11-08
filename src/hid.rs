@@ -469,12 +469,12 @@ unsafe fn run() {
                             gestures.opts.drag_scrolls = here_scrolls;
                         }
                         fingers_before = frame.touches.len();
-                        let acts = gestures.frame(&frame);
+                        let acts = crate::tour::observe(gestures.frame(&frame));
                         trace(&frame, &acts);
                         out.run(&acts, &s);
                     }
                 }
-                let acts = gestures.tick(t);
+                let acts = crate::tour::observe(gestures.tick(t));
                 trace(&Frame { t, touches: vec![] }, &acts);
                 out.run(&acts, &s);
 

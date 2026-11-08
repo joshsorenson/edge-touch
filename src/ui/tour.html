@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Try Edge Touch</title>
+<style>
+  /* Shown on the Edge itself (2560x720, read from arm's length), so type is big. */
+  :root {
+    --bg: #0e0f12; --panel: #17191e; --ink: #f4f5f7; --ink-2: #a3a8b3; --line: #2a2e36;
+    --accent: #4da3ff; --good: #34c759;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 20px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: var(--bg); color: var(--ink); -webkit-user-select: none; user-select: none;
+    display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 24px; padding: 22px 40px 0; }
+  .dots { display: flex; gap: 10px; }
+  .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); transition: background .3s, transform .3s var(--ease); }
+  .dots i.done { background: var(--good); }
+  .dots i.now { background: var(--accent); transform: scale(1.4); }
+  .count { color: var(--ink-2); font-size: 18px; }
+  header .spacer { flex: 1; }
+  .link { font: inherit; font-size: 18px; color: var(--ink-2); background: none; border: 0; padding: 10px 14px; border-radius: 10px; }
+  .link:active { background: var(--panel); }
+
+  main { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 48px; padding: 8px 40px 32px; min-height: 0; }
+  .copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+  .copy h1 { font-size: 52px; line-height: 1.05; letter-spacing: -0.02em; margin: 0; font-weight: 650; }
+  .copy p { font-size: 24px; color: var(--ink-2); margin: 16px 0 0; max-width: 34ch; }
+  .copy .skip { margin-top: 22px; align-self: flex-start; }
+  .stage { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 22px; min-height: 0; overflow: hidden; display: grid; place-items: center; }
+
+  /* Step change: slide and fade the copy and stage in. */
+  .enter { animation: enter .45s var(--ease) both; }
+  @keyframes enter { from { opacity: 0; transform: translateY(14px); filter: blur(3px); } }
+
+  .btn { font: inherit; font-size: 24px; font-weight: 600; border: 0; border-radius: 999px; padding: 18px 40px; background: var(--accent); color: #04121f; }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .btn:active { transform: scale(.97); }
+  .row { display: flex; gap: 16px; }
+
+  .target {
+    width: 180px; height: 180px; border-radius: 50%; border: 0; background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(77,163,255,.5); animation: pulse 1.8s infinite; color: #04121f; font: inherit; font-size: 22px; font-weight: 600;
+  }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 28px rgba(77,163,255,0); } 100% { box-shadow: 0 0 0 0 rgba(77,163,255,0); } }
+
+  .list { position: absolute; inset: 0; overflow-y: auto; padding: 18px 28px; overscroll-behavior: contain; }
+  .list div { padding: 16px 4px; border-bottom: 1px solid var(--line); font-size: 22px; color: var(--ink-2); }
+  .list div.end { color: var(--good); font-weight: 600; border: 0; text-align: center; }
+
+  .card {
+    position: absolute; width: 220px; height: 150px; border-radius: 18px; background: #232730; border: 2px solid var(--line);
+    display: grid; place-items: center; font-size: 22px; font-weight: 600; touch-action: none; transition: border-color .2s, box-shadow .2s;
+  }
+  .card.lifted { border-color: var(--accent); box-shadow: 0 18px 40px rgba(0,0,0,.45); transition: none; }
+  .drop { position: absolute; right: 48px; top: 50%; width: 260px; height: 190px; margin-top: -95px; border: 3px dashed var(--line); border-radius: 22px; display: grid; place-items: center; color: var(--ink-2); font-size: 20px; }
+  .drop.hot { border-color: var(--accent); color: var(--ink); }
+  .menu { position: absolute; background: #2b3039; border: 1px solid var(--line); border-radius: 12px; padding: 8px 0; min-width: 200px; box-shadow: 0 14px 34px rgba(0,0,0,.5); }
+  .menu div { padding: 10px 20px; font-size: 20px; }
+
+  .zoomer { width: 260px; height: 260px; border-radius: 28px; background: conic-gradient(from 210deg, #4da3ff, #8f6bff, #ff6b9a, #ffb44d, #4da3ff); transition: transform .5s var(--ease); }
+  .zoomer.big { transform: scale(1.35); }
+
+  .edge-hint { position: absolute; left: 0; top: 0; bottom: 0; width: 10px; background: linear-gradient(90deg, var(--accent), transparent); animation: glow 1.4s ease-in-out infinite alternate; }
+  @keyframes glow { from { opacity: .25; } to { opacity: 1; } }
+  .arrow { font-size: 64px; color: var(--accent); animation: nudge 1.4s var(--ease) infinite; }
+  @keyframes nudge { 0% { transform: translateX(-30px); opacity: 0; } 40% { opacity: 1; } 100% { transform: translateX(40px); opacity: 0; } }
+
+  /* Success check (transitions.dev "success check"). */
+  .success { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(14,15,18,.72); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .success.show { opacity: 1; }
+  .success svg { width: 140px; height: 140px; }
+  .success circle { fill: var(--good); }
+  .success path { fill: none; stroke: #04121f; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 60; stroke-dashoffset: 60; }
+  .success.show svg { animation: pop .5s cubic-bezier(.34,1.35,.64,1) both; }
+  .success.show path { animation: draw .45s .12s var(--ease) forwards; }
+  @keyframes pop { from { transform: scale(.4) rotate(-40deg); filter: blur(6px); } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+
+  .warn { margin-top: 18px; padding: 14px 18px; border-radius: 14px; background: #3a2a10; color: #ffd28a; font-size: 20px; max-width: 34ch; }
+  .warn[hidden] { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .success path { stroke-dashoffset: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="dots" id="dots"></div>
+  <span class="count" id="count"></span>
+  <span class="spacer"></span>
+  <button class="link" id="skip-tour">Skip tour</button>
+</header>
+<main>
+  <div class="copy" id="copy"></div>
+  <div class="stage" id="stage"></div>
+</main>
+<script>
+  const send = (msg) => window.ipc.postMessage(JSON.stringify(msg));
+  const $ = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+
+  // Each step: copy, a stage to build, and how it's completed. Steps marked
+  // `gesture` are checked off by the app (it sees the gesture itself).
+  const STEPS = [
+    { id: "welcome", title: "Let's try Edge Touch", body: "A minute of practice with each gesture, right here on the Edge.", stage: welcome, noSkip: true },
+    { id: "tap", title: "Tap", body: "Tap the circle.", stage: (done) => target("Tap", "click", done) },
+    { id: "double", title: "Double-tap", body: "Tap the circle twice, quickly. That's a double-click.", stage: (done) => target("Twice", "dblclick", done) },
+    { id: "scroll", title: "Drag to scroll", body: "Put a finger on the list and drag up. Keep going to the end.", stage: (done) => list(done, true) },
+    { id: "glide", title: "Flick to glide", body: "Flick the list quickly and let go. It keeps moving on its own.", stage: (done) => list(null, false), gesture: ["glide"] },
+    { id: "rightclick", title: "Hold for a right-click", body: "Hold your finger still on the card for half a second, then lift.", stage: rightclick },
+    { id: "drag", title: "Hold, then drag", body: "Hold the card for a moment, then drag it into the box. Holding first is how you drag anything that would scroll.", stage: drag },
+    { id: "zoom", title: "Tap, then drag to zoom", body: "Tap once, then touch again and drag down to zoom in. Drag up to zoom out.", stage: zoomer, gesture: ["zoom"] },
+    { id: "swipe", title: "Swipe in from the side", body: "Start right at the left edge of the screen and swipe in. That's Back. From the right is Forward, and up from the bottom is Mission Control.", stage: swipe, gesture: ["back", "forward", "mission", "appwindows"] },
+    { id: "done", title: "You're all set", body: "Change any of this in Settings, from the Edge Touch icon in the menu bar.", stage: finish, noSkip: true },
+  ];
+
+  let i = 0;
+  let finished = false;
+
+  function render() {
+    const step = STEPS[i];
+    finished = false;
+    document.getElementById("dots").innerHTML = STEPS.map((_, n) => `<i class="${n < i ? "done" : n === i ? "now" : ""}"></i>`).join("");
+    document.getElementById("count").textContent = i > 0 && i < STEPS.length - 1 ? `${i} of ${STEPS.length - 2}` : "";
+    const copy = document.getElementById("copy");
+    copy.className = "copy enter";
+    copy.innerHTML = `<h1>${step.title}</h1><p>${step.body}</p><div class="warn" id="warn" hidden></div>` +
+      (step.noSkip ? "" : `<button class="link skip" id="skip-step">Skip this one</button>`);
+    const stage = document.getElementById("stage");
+    stage.className = "stage enter";
+    stage.innerHTML = "";
+    step.stage(complete, stage);
+    stage.appendChild($(`<div class="success" id="success"><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="26"/><path d="M15 27 l8 8 l15 -17"/></svg></div>`));
+    document.getElementById("skip-step")?.addEventListener("click", next);
+    document.getElementById("skip-tour").hidden = i === STEPS.length - 1;
+    void copy.offsetWidth;
+    send({ type: "step", id: step.id });
+    applyStatus();
+  }
+
+  function complete() {
+    if (finished) return;
+    finished = true;
+    document.getElementById("success").classList.add("show");
+    setTimeout(next, 1100);
+  }
+
+  function next() {
+    if (i < STEPS.length - 1) { i++; render(); }
+  }
+
+  // ---- Stages ----
+  function welcome(_done, stage) {
+    const b = $(`<button class="btn">Start</button>`);
+    b.addEventListener("click", next);
+    stage.appendChild(b);
+  }
+
+  function target(label, event, done, ) {
+    const stage = document.getElementById("stage");
+    const t = $(`<button class="target">${label}</button>`);
+    t.addEventListener(event, done);
+    stage.appendChild(t);
+  }
+
+  function list(done) {
+    const stage = document.getElementById("stage");
+    const l = $(`<div class="list"></div>`);
+    const words = ["Inbox", "Calendar", "Linear", "Spotify", "Weather", "Photos", "Reminders", "Notes", "Messages", "Music", "Finder", "Safari", "Maps", "Mail", "Podcasts", "Books", "News", "Stocks", "Home", "Clock", "Files", "Preview", "Terminal", "Xcode", "Figma", "Slack", "Zoom", "Notion", "Arc", "Things"];
+    words.forEach((w) => l.appendChild($(`<div>${w}</div>`)));
+    l.appendChild($(`<div class="end">You made it to the end</div>`));
+    if (done) l.addEventListener("scroll", () => { if (l.scrollTop + l.clientHeight >= l.scrollHeight - 6) done(); });
+    stage.appendChild(l);
+  }
+
+  function rightclick(done, stage) {
+    const c = $(`<div class="card" style="left: calc(50% - 110px); top: calc(50% - 75px)">Hold me</div>`);
+    c.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const r = stage.getBoundingClientRect();
+      const m = $(`<div class="menu"><div>Open</div><div>Rename</div><div>Share</div></div>`);
+      m.style.left = (e.clientX - r.left) + "px";
+      m.style.top = (e.clientY - r.top) + "px";
+      stage.appendChild(m);
+      done();
+    });
+    stage.appendChild(c);
+  }
+
+  function drag(done, stage) {
+    const box = $(`<div class="drop">Drop it here</div>`);
+    const c = $(`<div class="card" style="left: 60px; top: calc(50% - 75px)">Drag me</div>`);
+    stage.append(box, c);
+    let grab = null;
+    const inside = () => {
+      const a = c.getBoundingClientRect(), b = box.getBoundingClientRect();
+      const cx = a.left + a.width / 2, cy = a.top + a.height / 2;
+      return cx > b.left && cx < b.right && cy > b.top && cy < b.bottom;
+    };
+    c.addEventListener("mousedown", (e) => {
+      const r = c.getBoundingClientRect();
+      grab = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+      c.classList.add("lifted");
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!grab) return;
+      const s = stage.getBoundingClientRect();
+      c.style.left = (e.clientX - s.left - grab.dx) + "px";
+      c.style.top = (e.clientY - s.top - grab.dy) + "px";
+      box.classList.toggle("hot", inside());
+    });
+    window.addEventListener("mouseup", () => {
+      if (!grab) return;
+      grab = null;
+      c.classList.remove("lifted");
+      if (inside()) done();
+    });
+  }
+
+  function zoomer(_done, stage) {
+    stage.appendChild($(`<div class="zoomer" id="zoomer"></div>`));
+  }
+
+  function swipe(_done, stage) {
+    stage.append($(`<div class="edge-hint"></div>`), $(`<div class="arrow">→</div>`));
+  }
+
+  function finish(_done, stage) {
+    const row = $(`<div class="row"><button class="btn ghost" id="open-settings">Open Settings</button><button class="btn" id="finish">Done</button></div>`);
+    stage.appendChild(row);
+    row.querySelector("#finish").addEventListener("click", () => send({ type: "done" }));
+    row.querySelector("#open-settings").addEventListener("click", () => send({ type: "settings" }));
+  }
+
+  // ---- From the app ----
+  // A gesture the touch driver recognized.
+  function gesture(name) {
+    const step = STEPS[i];
+    if (name === "zoom") document.getElementById("zoomer")?.classList.toggle("big");
+    if (step.gesture && step.gesture.includes(name)) complete();
+  }
+
+  let status = { on: true, label: "" };
+  function setStatus(s) { status = s; applyStatus(); }
+  function applyStatus() {
+    const w = document.getElementById("warn");
+    if (!w) return;
+    w.hidden = status.on;
+    w.textContent = status.on ? "" : `Edge Touch isn't reading touches yet: ${status.label}. Use a mouse for now, or fix it from the menu bar icon.`;
+  }
+
+  document.getElementById("skip-tour").addEventListener("click", () => send({ type: "skip" }));
+  render();
+  send({ type: "ready" });
+</script>
+</body>
+</html>

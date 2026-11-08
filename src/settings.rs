@@ -24,11 +24,13 @@ pub struct Settings {
     pub zoom_drag: bool,
     /// Swipe in from the sides for Back, Forward, Mission Control, App windows.
     pub edge_swipes: bool,
+    /// The gesture tour has been finished or skipped.
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { enabled: true, drag_scrolls: true, momentum: true, flip_scroll: false, return_cursor: true, pinch_keys: false, zoom_drag: true, edge_swipes: true }
+        Settings { enabled: true, drag_scrolls: true, momentum: true, flip_scroll: false, return_cursor: true, pinch_keys: false, zoom_drag: true, edge_swipes: true, onboarded: false }
     }
 }
 

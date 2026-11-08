@@ -25,6 +25,10 @@ The panel is 5+ point multi-touch, but its firmware decides during USB enumerati
 
 Ways around it: a small USB adapter (RP2040/RP2350 running TinyUSB) between the panel and the Mac that enumerates it the Windows way, or a firmware fix from Corsair.
 
+## Gesture tour
+
+On first launch, a tour opens on the Edge and has you try each one-finger gesture: tap, double-tap, scroll, flick, hold for right-click, hold and drag, tap-then-drag zoom and an edge swipe. Each step checks itself off when you do it. Run it again from the menu bar: **Try the Gestures…**. While it's open, edge swipes don't trigger Back or Mission Control.
+
 ## Menu and settings
 
 The menu bar icon has the on/off switch (off hands the panel back to Edge Deck), Settings and About. Settings has General (cursor return, open at login, permissions, log), Gestures (every toggle) and About tabs.
@@ -60,5 +64,6 @@ Log: `~/Library/Application Support/EdgeTouch/edge-touch.log`.
 - `src/ax.rs`: asks Accessibility what's under a finger (scroll or drag).
 - `src/settings.rs`: settings, saved as JSON.
 - `src/ui/settings.html`: the settings window (a web view).
+- `src/ui/tour.html` + `src/tour.rs`: the gesture tour, and how the touch thread tells it which gestures it saw.
 
 Diagnostic: create `~/Library/Application Support/EdgeTouch/listen` and restart the app. For 45 seconds it watches every interface without taking the panel over and logs which values arrive.

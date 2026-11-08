@@ -17,6 +17,7 @@ mod hid;
 #[cfg(target_os = "macos")]
 mod output;
 mod settings;
+mod tour;
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -35,7 +36,7 @@ mod app {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
     use serde_json::{json, Value};
-    use tao::dpi::LogicalSize;
+    use tao::dpi::{LogicalPosition, LogicalSize};
     use tao::event::{Event, StartCause, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
     use tao::window::{Window, WindowBuilder};
@@ -103,6 +104,7 @@ mod app {
         status: MenuItem,
         enabled: CheckMenuItem,
         settings: MenuItem,
+        tour: MenuItem,
         about: MenuItem,
         quit: MenuItem,
     }
@@ -112,18 +114,22 @@ mod app {
             status: MenuItem::new("Edge Touch: starting…", false, None),
             enabled: CheckMenuItem::new("Use the Edge as a touchscreen", true, s.enabled, None),
             settings: MenuItem::new("Settings…", true, None),
+            tour: MenuItem::new("Try the Gestures…", true, None),
             about: MenuItem::new("About Edge Touch", true, None),
             quit: MenuItem::new("Quit Edge Touch", true, None),
         };
         let menu = Menu::new();
         let sep = || PredefinedMenuItem::separator();
-        let _ = menu.append_items(&[&items.status, &sep(), &items.enabled, &sep(), &items.settings, &items.about, &sep(), &items.quit]);
+        let _ = menu.append_items(&[&items.status, &sep(), &items.enabled, &sep(), &items.settings, &items.tour, &items.about, &sep(), &items.quit]);
         (menu, items)
     }
 
     /// Messages from the settings page (see src/ui/settings.html).
     enum UserEvent {
+        /// From the settings window.
         Ipc(String),
+        /// From the gesture tour.
+        Tour(String),
     }
 
     /// The settings window and its web view.
@@ -165,6 +171,39 @@ mod app {
             .ok()?;
         window.set_focus();
         Some(SettingsWindow { window, view })
+    }
+
+    /// The gesture tour, shown on the Edge itself so you practice where
+    /// you'll touch. Borderless and above Edge Deck's window.
+    fn open_tour(target: &EventLoopWindowTarget<UserEvent>, proxy: &EventLoopProxy<UserEvent>) -> Option<SettingsWindow> {
+        let mut builder = WindowBuilder::new().with_title("Try Edge Touch").with_decorations(false).with_always_on_top(true);
+        builder = match hid::edge_rect() {
+            Some((x, y, w, h)) => {
+                let (tw, th) = ((w - 120.0).max(800.0), (h - 60.0).max(400.0));
+                builder
+                    .with_inner_size(LogicalSize::new(tw, th))
+                    .with_position(LogicalPosition::new(x + (w - tw) / 2.0, y + (h - th) / 2.0))
+            }
+            None => builder.with_inner_size(LogicalSize::new(1600.0, 640.0)),
+        };
+        let window = builder.build(target).map_err(|e| settings::log(&format!("tour window: {e}"))).ok()?;
+        let proxy = proxy.clone();
+        let view = WebViewBuilder::new()
+            .with_html(include_str!("ui/tour.html"))
+            .with_ipc_handler(move |req| {
+                let _ = proxy.send_event(UserEvent::Tour(req.body().clone()));
+            })
+            .build(&window)
+            .map_err(|e| settings::log(&format!("tour view: {e}")))
+            .ok()?;
+        window.set_focus();
+        crate::tour::set_active(true);
+        Some(SettingsWindow { window, view })
+    }
+
+    fn tour_status() -> String {
+        let st = hid::status();
+        json!({ "on": st == hid::Status::On, "label": st.label() }).to_string()
     }
 
     /// Handle one message from the settings page.
@@ -209,6 +248,9 @@ mod app {
 
         let mut tray: Option<(TrayIcon, Items)> = None;
         let mut win: Option<SettingsWindow> = None;
+        let mut tour: Option<SettingsWindow> = None;
+        let mut open_settings_tab: Option<&str> = None;
+        let mut tour_started = false;
         let mut shown: Option<String> = None;
         let mut last_push = Instant::now();
         let menu_events = MenuEvent::receiver();
@@ -233,7 +275,32 @@ mod app {
                         on_ipc(body, w);
                     }
                 }
-                Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => win = None,
+                Event::UserEvent(UserEvent::Tour(body)) => {
+                    let msg: Value = serde_json::from_str(body).unwrap_or_default();
+                    match msg["type"].as_str() {
+                        Some("step") => settings::log(&format!("tour: {}", msg["id"].as_str().unwrap_or("?"))),
+                        Some("done") | Some("skip") | Some("settings") => {
+                            settings::update(|s| s.onboarded = true);
+                            crate::tour::set_active(false);
+                            tour = None;
+                            if msg["type"] == "settings" {
+                                open_settings_tab = Some("gestures");
+                            }
+                        }
+                        _ => {}
+                    }
+                    if let Some(t) = &tour {
+                        let _ = t.view.evaluate_script(&format!("setStatus({})", tour_status()));
+                    }
+                }
+                Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } => {
+                    if tour.as_ref().map(|t| t.window.id()) == Some(*window_id) {
+                        crate::tour::set_active(false);
+                        tour = None;
+                    } else {
+                        win = None;
+                    }
+                }
                 _ => {}
             }
             let Some((icon_handle, items)) = tray.as_ref() else { return };
@@ -249,6 +316,14 @@ mod app {
                 }
             };
 
+            if let Some(tab) = open_settings_tab.take() {
+                show(tab);
+            }
+
+            // First launch: the tour. Later: from the menu.
+            let mut start_tour = !tour_started && !settings::get().onboarded;
+            tour_started = true;
+
             while let Ok(ev) = menu_events.try_recv() {
                 let id = ev.id();
                 if id == items.quit.id() {
@@ -262,6 +337,20 @@ mod app {
                     show("general");
                 } else if id == items.about.id() {
                     show("about");
+                } else if id == items.tour.id() {
+                    start_tour = true;
+                }
+            }
+            if start_tour {
+                match &tour {
+                    Some(t) => t.window.set_focus(),
+                    None => tour = open_tour(target, &proxy),
+                }
+            }
+            // Gestures the touch thread recognized, for the tour to check off.
+            if let Some(t) = &tour {
+                for name in crate::tour::drain() {
+                    let _ = t.view.evaluate_script(&format!("gesture('{name}')"));
                 }
             }
 
@@ -278,11 +367,14 @@ mod app {
                 shown = Some(key);
                 last_push = Instant::now() - Duration::from_secs(10);
             }
-            if let Some(w) = &win {
-                if last_push.elapsed() > Duration::from_secs(2) {
+            if last_push.elapsed() > Duration::from_secs(2) {
+                if let Some(w) = &win {
                     let _ = w.view.evaluate_script(&format!("render({})", state_json()));
-                    last_push = Instant::now();
                 }
+                if let Some(t) = &tour {
+                    let _ = t.view.evaluate_script(&format!("setStatus({})", tour_status()));
+                }
+                last_push = Instant::now();
             }
         });
     }
